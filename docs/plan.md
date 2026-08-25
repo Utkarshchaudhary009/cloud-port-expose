@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–2 done; next up: Phase 3.
+> **Status:** Implementation in progress — Phases 1–3 done; next up: Phase 4.
 >
 > **Source of truth:** This file is the authoritative implementation plan for `cloud-port-expose`. The repository, issue discussions, chat history, and agent memory must not override this file.
 
@@ -128,13 +128,13 @@ A command or test harness can expose a local HTTP server through a generated rel
 
 ### Tasks
 
-- [ ] Implement HTTP Upgrade/WebSocket tunneling.
-- [ ] Preserve bidirectional message ordering.
-- [ ] Support streaming request/response bodies.
-- [ ] Handle half-close/disconnect semantics.
-- [ ] Signal truncated responses: if the origin dies after headers were forwarded, the tunnel must not present the body as complete.
-- [ ] Add heartbeat/keepalive support (application-level ping/pong at 25–30 s; Bun caps socket `idleTimeout` at 255 s).
-- [ ] Add reconnect behavior without corrupting a live session.
+- [x] Implement HTTP Upgrade/WebSocket tunneling.
+- [x] Preserve bidirectional message ordering.
+- [x] Support streaming request/response bodies.
+- [x] Handle half-close/disconnect semantics.
+- [x] Signal truncated responses: if the origin dies after headers were forwarded, the tunnel must not present the body as complete.
+- [x] Add heartbeat/keepalive support (application-level ping/pong at 25–30 s; Bun caps socket `idleTimeout` at 255 s).
+- [x] Add reconnect behavior without corrupting a live session.
 
 ### Deliverable
 
@@ -142,12 +142,12 @@ The tunnel transparently supports normal HTTP plus persistent WebSocket connecti
 
 ### Verification
 
-- [ ] Pass a dedicated WebSocket echo test through the tunnel.
-- [ ] Verify bidirectional WebSocket messages in both directions.
-- [ ] Verify large/streamed payloads.
-- [ ] Verify idle connections survive the configured heartbeat interval.
-- [ ] Verify disconnected clients are detected and removed.
-- [ ] Verify a reconnect establishes a clean session.
+- [x] Pass a dedicated WebSocket echo test through the tunnel.
+- [x] Verify bidirectional WebSocket messages in both directions.
+- [x] Verify large/streamed payloads.
+- [x] Verify idle connections survive the configured heartbeat interval.
+- [x] Verify disconnected clients are detected and removed.
+- [x] Verify a reconnect establishes a clean session.
 
 ---
 

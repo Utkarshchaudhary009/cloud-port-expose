@@ -7,6 +7,8 @@ import {
   type RequestHeadMsg,
   type TunnelMsg,
   type WelcomeMsg,
+  type WsDataMsg,
+  type WsOpenMsg,
 } from "../protocol";
 import { decodeBase64, encodeBase64 } from "../protocol/bytes";
 import { filterRequestHeaders, filterResponseHeaders, headersToEntries } from "../util/http";
@@ -23,7 +25,19 @@ export interface AgentOptions {
   exposureId?: string;
   logLevel?: LogLevel;
   connectTimeoutMs?: number;
+  heartbeatIntervalMs?: number;
 }
+
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
+const WS_HEADERS_TO_DROP = new Set([
+  "host",
+  "connection",
+  "upgrade",
+  "sec-websocket-key",
+  "sec-websocket-version",
+  "sec-websocket-extensions",
+  "sec-websocket-accept",
+]);
 
 export interface ExposedEndpoint {
   sessionId: string;
@@ -71,6 +85,7 @@ export class ExposeAgent {
   private readonly originPort: number;
   private readonly originHostname: string;
   private readonly connectTimeoutMs: number;
+  private readonly heartbeatIntervalMs: number;
   private readonly log: Logger;
   private ws: WebSocket | undefined;
   private sessionId: string | undefined;
@@ -78,6 +93,10 @@ export class ExposeAgent {
   private exposed: Deferred<ExposedMsg> | undefined;
   private readonly inflight = new Map<number, AbortController>();
   private readonly requestBodies = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+  private readonly bridged = new Map<number, WebSocket>();
+  private readonly pendingOriginFrames = new Map<number, (string | Uint8Array)[]>();
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private lastIncomingAt = Date.now();
   private closedByUs = false;
 
   constructor(options: AgentOptions) {
@@ -89,6 +108,7 @@ export class ExposeAgent {
     this.originPort = options.originPort;
     this.originHostname = options.originHostname ?? DEFAULT_ORIGIN_HOSTNAME;
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.log = createLogger({ subsystem: "agent", level: options.logLevel });
   }
 
@@ -157,6 +177,7 @@ export class ExposeAgent {
       this.welcome = {
         resolve: (welcomeMsg) => {
           this.sessionId = welcomeMsg.sessionId;
+          this.startHeartbeat();
           this.log.info("session established", { sessionId: welcomeMsg.sessionId });
           settleConnect();
         },
@@ -185,6 +206,10 @@ export class ExposeAgent {
 
   async close(): Promise<void> {
     this.closedByUs = true;
+    if (this.heartbeatTimer !== undefined) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
     const socket = this.ws;
     this.ws = undefined;
     for (const controller of this.inflight.values()) {
@@ -211,7 +236,38 @@ export class ExposeAgent {
     }
   }
 
+  private startHeartbeat(): void {
+    const interval = this.heartbeatIntervalMs;
+    if (interval <= 0) {
+      return;
+    }
+    let lastPingSentAt = Date.now();
+    this.heartbeatTimer = setInterval(
+      () => {
+        if (!this.connected) {
+          return;
+        }
+        const now = Date.now();
+        if (now - this.lastIncomingAt > interval * 2.5) {
+          this.log.warn("heartbeat timeout, closing relay connection", { interval });
+          void this.close();
+          return;
+        }
+        if (now - lastPingSentAt >= interval) {
+          lastPingSentAt = now;
+          try {
+            this.send({ t: "ping", nonce: now % 1_000_000 });
+          } catch {
+            // socket died; close handler will clean up
+          }
+        }
+      },
+      Math.min(interval, 1000),
+    );
+  }
+
   private async handleMessage(raw: string | Uint8Array): Promise<void> {
+    this.lastIncomingAt = Date.now();
     let msg: TunnelMsg;
     try {
       msg = decodeMessage(raw);
@@ -239,6 +295,15 @@ export class ExposeAgent {
       case "exposed":
         this.exposed?.resolve(msg);
         this.exposed = undefined;
+        return;
+      case "ws-open":
+        this.openOriginBridge(msg);
+        return;
+      case "ws-data":
+        this.deliverToOrigin(msg);
+        return;
+      case "ws-close":
+        this.closeBridged(msg.connId, msg.code, msg.reason);
         return;
       case "req-head":
         void this.serveRequest(msg);
@@ -301,8 +366,10 @@ export class ExposeAgent {
       this.log.warn("request failed at origin", { streamId, err: reason });
       if (!responseSent) {
         this.trySendAbort(streamId, reason);
+      } else if (controller.signal.aborted) {
+        // relay retired the stream (timeout/client disconnect): nothing to signal
       } else {
-        this.sendResBodyFinal(streamId);
+        this.trySendAbort(streamId, `origin response truncated: ${reason}`);
       }
     } finally {
       this.inflight.delete(streamId);
@@ -411,12 +478,129 @@ export class ExposeAgent {
     }
   }
 
+  private openOriginBridge(head: WsOpenMsg): void {
+    const connId = head.connId;
+    const protocols = head.headers
+      .filter(([name]) => name.toLowerCase() === "sec-websocket-protocol")
+      .map(([, value]) => value)
+      .join(", ");
+    const forwardedHeaders: Record<string, string> = {};
+    for (const [name, value] of head.headers) {
+      if (!WS_HEADERS_TO_DROP.has(name.toLowerCase())) {
+        forwardedHeaders[name] = value;
+      }
+    }
+    const target = `${this.originWsBaseUrl()}${head.path}${head.query ? `?${head.query}` : ""}`;
+    const child = new WebSocket(target, {
+      headers: forwardedHeaders,
+      protocols: protocols || undefined,
+    });
+    this.bridged.set(connId, child);
+    this.pendingOriginFrames.set(connId, []);
+    this.log.info("bridging websocket to origin", { connId, path: head.path });
+
+    child.addEventListener("open", () => {
+      const queued = this.pendingOriginFrames.get(connId);
+      this.pendingOriginFrames.delete(connId);
+      if (queued) {
+        for (const frame of queued) {
+          child.send(frame);
+        }
+      }
+      this.log.debug("origin bridge open", { connId, flushed: queued?.length ?? 0 });
+    });
+    child.addEventListener("message", (event) => {
+      const isText = typeof event.data === "string";
+      try {
+        this.send({
+          t: "ws-data",
+          connId,
+          encoding: isText ? "utf8" : "base64",
+          data: isText
+            ? (event.data as string)
+            : encodeBase64(new Uint8Array(event.data as ArrayBuffer)),
+        });
+      } catch {
+        // relay socket died; close handler cleans up bridges
+      }
+    });
+    child.addEventListener("close", (event) => {
+      const closeEvent = event as CloseEvent;
+      this.bridged.delete(connId);
+      this.pendingOriginFrames.delete(connId);
+      try {
+        this.send({
+          t: "ws-close",
+          connId,
+          code: closeEvent.code ?? 1005,
+          reason: (closeEvent.reason ?? "").slice(0, 120),
+        });
+      } catch {
+        // relay socket gone
+      }
+    });
+    child.addEventListener("error", () => {
+      this.log.warn("origin bridge error", { connId });
+      try {
+        child.close(1011, "origin connection failed");
+      } catch {
+        // already closed
+      }
+    });
+  }
+
+  private deliverToOrigin(msg: WsDataMsg): void {
+    const child = this.bridged.get(msg.connId);
+    if (!child) {
+      this.log.debug("ws-data for unknown origin bridge", { connId: msg.connId });
+      return;
+    }
+    const frame = msg.encoding === "utf8" ? msg.data : decodeBase64(msg.data);
+    if (child.readyState === WebSocket.OPEN) {
+      child.send(frame);
+      return;
+    }
+    const queued = this.pendingOriginFrames.get(msg.connId);
+    if (queued) {
+      queued.push(frame);
+    }
+  }
+
+  private closeBridged(connId: number, code: number, reason: string): void {
+    const child = this.bridged.get(connId);
+    if (!child) {
+      return;
+    }
+    this.bridged.delete(connId);
+    try {
+      child.close(code === 1005 ? 1000 : code, reason.slice(0, 120));
+    } catch {
+      // already closed
+    }
+  }
+
+  private originWsBaseUrl(): string {
+    return `ws://${this.originHostname}:${this.originPort}`;
+  }
+
   private handleSocketClosed(): void {
+    if (this.heartbeatTimer !== undefined) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
     this.failAllPendingBodies(new Error("tunnel closed"), true);
     for (const controller of this.inflight.values()) {
       controller.abort();
     }
     this.inflight.clear();
+    for (const child of this.bridged.values()) {
+      try {
+        child.close(1011, "tunnel closed");
+      } catch {
+        // already closed
+      }
+    }
+    this.bridged.clear();
     const error = new AgentError(
       this.closedByUs ? "connection closed" : "connection to relay lost",
     );
