@@ -182,6 +182,11 @@ Do not hide infrastructure failures. Errors must:
 - avoid leaking credentials or internal secrets
 - distinguish authentication, routing, connection, and upstream-service failures
 
+CLI surfaces are consumed by humans *and* AI agents, so additionally:
+
+- Every CLI error exit includes an actionable next step — the exact command, flag, or environment variable that fixes or unblocks the failure (e.g., "relay unreachable — pass `--relay ws://host:port` or set `CLOUD_EXPOSE_RELAY`").
+- Every command accepts `--json`: exactly one stable-schema JSON object goes to stdout on both success and failure paths, so agents never scrape free text. Human-readable output stays the default.
+
 For the CLI, errors should be concise enough to be useful in a terminal. For the relay, logs should carry enough context to trace a connection without recording secrets.
 
 ## 9 · Testing Strategy (test pyramid)
