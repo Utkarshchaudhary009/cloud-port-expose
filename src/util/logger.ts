@@ -69,13 +69,20 @@ export function createLogger(options: LoggerOptions): Logger {
     if (LEVEL_ORDER[level] < minLevel) {
       return;
     }
+    const RESERVED_KEYS = new Set(["ts", "level", "subsystem", "msg"]);
+    const safeBindings = Object.fromEntries(
+      Object.entries(options.bindings ?? {}).filter(([k]) => !RESERVED_KEYS.has(k)),
+    );
+    const safeContext = Object.fromEntries(
+      Object.entries(context ?? {}).filter(([k]) => !RESERVED_KEYS.has(k)),
+    );
     const line = redact({
+      ...safeBindings,
+      ...safeContext,
       ts: new Date().toISOString(),
       level,
       subsystem: options.subsystem,
       msg: message,
-      ...options.bindings,
-      ...context,
     });
     try {
       sink(JSON.stringify(line));

@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1 complete; next up: Phase 2.
+> **Status:** Implementation in progress — Phases 1–2 done; next up: Phase 3.
 >
 > **Source of truth:** This file is the authoritative implementation plan for `cloud-port-expose`. The repository, issue discussions, chat history, and agent memory must not override this file.
 

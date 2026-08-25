@@ -13,36 +13,23 @@ const agent = new ExposeAgent({
   exposureId,
   logLevel: "warn",
 });
-await agent.connect();
-const endpoint = await agent.expose();
+
+try {
+  await agent.connect();
+} catch (error) {
+  console.error(`mini-agent failed to connect: ${(error as Error).message}`);
+  process.exit(1);
+}
+const endpoint = await agent.expose().catch((error: Error) => {
+  console.error(`mini-agent failed to expose: ${error.message}`);
+  process.exit(1);
+});
 console.log(
-  JSON.stringify({ sessionId: endpoint.sessionId, hostname: endpoint.hostname, url: endpoint.url }),
+  JSON.stringify({ hostname: endpoint.hostname, sessionId: endpoint.sessionId, url: endpoint.url }),
 );
 
-function noteExit(reason: string): void {
-  try {
-    const { appendFileSync } = require("node:fs");
-    appendFileSync(
-      "/tmp/opencode/mini-agent-exits.log",
-      `${new Date().toISOString()} pid=${process.pid} ${reason}\n`,
-    );
-  } catch {
-    // ignore
-  }
-}
-
 process.on("SIGTERM", () => {
-  noteExit("sigterm");
   void agent.close().then(() => process.exit(0));
-});
-
-process.on("exit", () => {
-  noteExit("exit");
-});
-
-process.on("uncaughtException", (error) => {
-  noteExit(`uncaught: ${error.message}`);
-  process.exit(1);
 });
 
 setInterval(() => {}, 60_000);

@@ -33,7 +33,7 @@ function parseArgs(argv: readonly string[]): Args {
       host = arg ?? "";
     } else if (port === 0) {
       port = Number.parseInt(arg ?? "", 10);
-    } else if (arg !== undefined) {
+    } else if (arg?.startsWith("/")) {
       pathWithQuery = arg;
     }
   }

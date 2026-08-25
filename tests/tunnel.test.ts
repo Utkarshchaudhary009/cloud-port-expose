@@ -64,10 +64,6 @@ beforeAll(async () => {
       if (url.pathname === "/slow") {
         await new Promise((resolve) => setTimeout(resolve, 1_200));
       }
-      if (url.pathname === "/slow-then-409") {
-        await new Promise((resolve) => setTimeout(resolve, 900));
-        return new Response("conflicted", { status: 409 });
-      }
       const body = request.body === null ? "" : await request.text();
       return Response.json({
         method: request.method,

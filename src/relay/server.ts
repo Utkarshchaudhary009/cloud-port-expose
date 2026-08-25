@@ -144,7 +144,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   return Promise.resolve({
     port,
     hostname,
-    agentUrl: `ws://${hostname}:${port}${agentPath}`,
+    agentUrl: `ws://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}${agentPath}`,
     domain,
     stop: async () => {
       server.stop(true);

@@ -16,7 +16,18 @@ const FORWARDED_REQUEST_DROP = new Set([...HOP_BY_HOP_HEADERS, "host", "content-
 const FORWARDED_RESPONSE_DROP = new Set([...HOP_BY_HOP_HEADERS, "content-length"]);
 
 export function filterRequestHeaders(entries: HeaderEntries): HeaderEntries {
-  return entries.filter(([name]) => !FORWARDED_REQUEST_DROP.has(name.toLowerCase()));
+  const connectionNamed = new Set<string>();
+  for (const [name, value] of entries) {
+    if (name.toLowerCase() === "connection") {
+      for (const token of value.split(",")) {
+        connectionNamed.add(token.trim().toLowerCase());
+      }
+    }
+  }
+  return entries.filter(
+    ([name]) =>
+      !FORWARDED_REQUEST_DROP.has(name.toLowerCase()) && !connectionNamed.has(name.toLowerCase()),
+  );
 }
 
 export function filterResponseHeaders(entries: HeaderEntries): HeaderEntries {

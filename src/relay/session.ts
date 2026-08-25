@@ -78,6 +78,7 @@ export class AgentConnection {
   private readonly waiters = new Map<number, ExchangeWaiter>();
   private nextStreamId = 1;
   private disposed = false;
+  private handshaked = false;
   private readonly log: Logger;
 
   constructor(
@@ -100,6 +101,10 @@ export class AgentConnection {
       msg = decodeMessage(raw);
     } catch (error) {
       this.fail(`malformed message: ${(error as Error).message}`);
+      return;
+    }
+    if (!this.handshaked && msg.t !== "hello" && msg.t !== "error") {
+      this.fail("handshake required before other messages");
       return;
     }
     switch (msg.t) {
@@ -274,6 +279,7 @@ export class AgentConnection {
       this.dispose();
       return;
     }
+    this.handshaked = true;
     this.send({ t: "welcome", sessionId: this.sessionId });
   }
 
