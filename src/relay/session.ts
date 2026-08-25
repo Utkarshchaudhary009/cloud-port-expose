@@ -9,6 +9,8 @@ import {
   type ResponseBodyMsg,
   type ResponseHeadMsg,
   type TunnelMsg,
+  type WsCloseMsg,
+  type WsDataMsg,
 } from "../protocol";
 import { decodeBase64, encodeBase64 } from "../protocol/bytes";
 import { filterRequestHeaders, filterResponseHeaders, headersToEntries } from "../util/http";
@@ -23,6 +25,7 @@ export interface RelayOptions {
   domain?: string;
   agentPath?: string;
   requestTimeoutMs?: number;
+  heartbeatIntervalMs?: number;
   logLevel?: LogLevel;
 }
 
@@ -57,9 +60,18 @@ interface ExchangeWaiter {
   reject: (error: Error) => void;
 }
 
+export interface BridgeInfo {
+  connId: number;
+  path: string;
+  query: string;
+  headers: HeaderEntries;
+  attached: boolean;
+}
+
 export interface RelayDeps {
   domain: string;
   requestTimeoutMs: number;
+  heartbeatIntervalMs: number;
   log: Logger;
   buildPublicUrl: (hostname: string) => string;
   registerExposure: (hostname: string, owner: AgentConnection) => boolean;
@@ -77,8 +89,15 @@ export class AgentConnection {
   private readonly streams = new Map<number, StreamState>();
   private readonly waiters = new Map<number, ExchangeWaiter>();
   private nextStreamId = 1;
+  private nextConnId = 1;
   private disposed = false;
   private handshaked = false;
+  private readonly publicSockets = new Map<
+    number,
+    { info: BridgeInfo; socket?: ServerWebSocket<unknown> | undefined }
+  >();
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private lastIncomingAt = Date.now();
   private readonly log: Logger;
 
   constructor(
@@ -89,13 +108,46 @@ export class AgentConnection {
   }
 
   onOpen(): void {
+    this.startHeartbeat();
     this.log.info("agent connected");
+  }
+
+  private startHeartbeat(): void {
+    const interval = this.deps.heartbeatIntervalMs;
+    if (interval <= 0) {
+      return;
+    }
+    let lastPingSentAt = Date.now();
+    this.heartbeatTimer = setInterval(
+      () => {
+        if (this.disposed) {
+          return;
+        }
+        const now = Date.now();
+        if (now - this.lastIncomingAt > interval * 2.5) {
+          this.log.warn("heartbeat timeout, closing agent connection", { interval });
+          try {
+            this.ws.close(4000, "heartbeat timeout");
+          } catch {
+            // already closed
+          }
+          this.dispose();
+          return;
+        }
+        if (now - lastPingSentAt >= interval) {
+          lastPingSentAt = now;
+          this.send({ t: "ping", nonce: now % 1_000_000 });
+        }
+      },
+      Math.min(interval, 1000),
+    );
   }
 
   handleMessage(raw: string | Uint8Array): void {
     if (this.disposed) {
       return;
     }
+    this.lastIncomingAt = Date.now();
     let msg: TunnelMsg;
     try {
       msg = decodeMessage(raw);
@@ -117,8 +169,16 @@ export class AgentConnection {
       case "unexpose":
         this.handleUnexpose(msg.exposureId);
         return;
+      case "pong":
+        return;
       case "ping":
         this.send({ t: "pong", nonce: msg.nonce });
+        return;
+      case "ws-data":
+        this.handleWsDataFromAgent(msg);
+        return;
+      case "ws-close":
+        this.handleWsCloseFromAgent(msg);
         return;
       case "res-head":
         this.handleResponseHead(msg);
@@ -139,8 +199,6 @@ export class AgentConnection {
       case "req-head":
       case "req-body":
       case "ws-open":
-      case "ws-data":
-      case "ws-close":
         this.fail(`message type "${msg.t}" not accepted from agents`);
         return;
       case "welcome":
@@ -149,7 +207,6 @@ export class AgentConnection {
       case "exposed":
       case "unexposed":
       case "error":
-      case "pong":
         this.fail(`unexpected message type "${msg.t}" from agent`);
         return;
     }
@@ -252,11 +309,111 @@ export class AgentConnection {
     }
   }
 
+  prepareBridge(path: string, query: string, headers: HeaderEntries): BridgeInfo {
+    const connId = this.nextConnId++;
+    const info: BridgeInfo = { connId, path, query, headers, attached: false };
+    this.publicSockets.set(connId, { info, socket: undefined });
+    return info;
+  }
+
+  attachPublic(info: BridgeInfo, socket: ServerWebSocket<unknown>): void {
+    info.attached = true;
+    const entry = this.publicSockets.get(info.connId);
+    if (entry) {
+      entry.socket = socket;
+    }
+    this.send({
+      t: "ws-open",
+      connId: info.connId,
+      path: info.path,
+      query: info.query,
+      headers: info.headers,
+    });
+    this.log.info("public websocket attached", { connId: info.connId, path: info.path });
+  }
+
+  releaseBridge(info: BridgeInfo): void {
+    this.publicSockets.delete(info.connId);
+  }
+
+  private deliverToPublic(connId: number, data: string | Uint8Array): boolean {
+    const entry = this.publicSockets.get(connId);
+    if (!entry?.socket) {
+      return false;
+    }
+    try {
+      entry.socket.send(data);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  deliverFromPublic(connId: number, message: string | Uint8Array): void {
+    const entry = this.publicSockets.get(connId);
+    if (!entry) {
+      return;
+    }
+    const isText = typeof message === "string";
+    this.send({
+      t: "ws-data",
+      connId,
+      encoding: isText ? "utf8" : "base64",
+      data: isText ? (message as string) : encodeBase64(message as Uint8Array),
+    });
+  }
+
+  publicClosed(connId: number, code: number, reason: string): void {
+    const existed = this.publicSockets.delete(connId);
+    if (existed) {
+      this.log.info("public websocket closed", { connId });
+      this.send({
+        t: "ws-close",
+        connId,
+        code: normalizeCloseCode(code),
+        reason: reason.slice(0, 120),
+      });
+    }
+  }
+
+  private handleWsDataFromAgent(msg: WsDataMsg): void {
+    const payload = msg.encoding === "utf8" ? msg.data : decodeBase64(msg.data);
+    if (!this.deliverToPublic(msg.connId, payload)) {
+      this.log.debug("ws-data for unknown public connection", { connId: msg.connId });
+    }
+  }
+
+  private handleWsCloseFromAgent(msg: WsCloseMsg): void {
+    const entry = this.publicSockets.get(msg.connId);
+    this.publicSockets.delete(msg.connId);
+    if (!entry?.socket) {
+      this.log.debug("ws-close for unknown public connection", { connId: msg.connId });
+      return;
+    }
+    try {
+      entry.socket.close(normalizeCloseCode(msg.code), msg.reason.slice(0, 120));
+    } catch {
+      // already closed
+    }
+  }
+
   dispose(): void {
     if (this.disposed) {
       return;
     }
     this.disposed = true;
+    if (this.heartbeatTimer !== undefined) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    for (const entry of this.publicSockets.values()) {
+      try {
+        entry.socket?.close(1011, "agent disconnected");
+      } catch {
+        // already closed
+      }
+    }
+    this.publicSockets.clear();
     for (const streamId of [...this.waiters.keys()]) {
       this.rejectExchange(
         streamId,
@@ -460,6 +617,18 @@ export class AgentConnection {
       // socket already closed
     }
   }
+}
+
+const RESERVED_CLOSE_CODES = new Set([1004, 1005, 1006, 1015]);
+
+export function normalizeCloseCode(code: number): number {
+  if (code === 1005 || code === 0 || !Number.isFinite(code)) {
+    return 1000;
+  }
+  if (RESERVED_CLOSE_CODES.has(code)) {
+    return 1011;
+  }
+  return code;
 }
 
 function classify(

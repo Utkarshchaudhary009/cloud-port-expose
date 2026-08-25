@@ -1,11 +1,18 @@
 import type { ServerWebSocket } from "bun";
+import { filterRequestHeaders, headersToEntries } from "../util/http";
 import { createLogger, type Logger } from "../util/logger";
+import type { BridgeInfo } from "./session";
 import { AgentConnection, errorResponse, type RelayHandle, type RelayOptions } from "./session";
 
 const DEFAULT_DOMAIN = "localhost";
 const DEFAULT_AGENT_PATH = "/___agent";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const MAX_PERSISTED_SLUGS = 1000;
+
+interface PublicBridgeData {
+  bridge?: { owner: AgentConnection; info: BridgeInfo };
+}
 
 interface ExposureBinding {
   hostname: string;
@@ -17,6 +24,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   const domain = (options.domain ?? DEFAULT_DOMAIN).toLowerCase();
   const agentPath = options.agentPath ?? DEFAULT_AGENT_PATH;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const log: Logger = createLogger({ subsystem: "relay", level: options.logLevel });
 
   const activeHostnames = new Map<string, ExposureBinding>();
@@ -27,6 +35,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   const deps = {
     domain,
     requestTimeoutMs,
+    heartbeatIntervalMs,
     log,
     buildPublicUrl: (hostname: string) => `http://${hostname}${portSuffix}`,
     registerExposure: (hostname: string, owner: AgentConnection): boolean => {
@@ -81,21 +90,20 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
     },
   };
 
-  const server = Bun.serve({
+  const server = Bun.serve<PublicBridgeData>({
     port: options.port ?? 0,
     hostname: options.hostname ?? "127.0.0.1",
     idleTimeout: 255,
     async fetch(request, server): Promise<Response | undefined> {
       const url = new URL(request.url);
-      const upgradeHeader = request.headers.get("upgrade")?.toLowerCase();
-      if (url.pathname === agentPath && upgradeHeader === "websocket") {
-        const upgraded = server.upgrade(request);
+      const isUpgrade = request.headers.get("upgrade")?.toLowerCase() === "websocket";
+      if (isUpgrade && url.pathname === agentPath) {
+        const upgraded = server.upgrade(request, { data: {} });
         if (!upgraded) {
           return new Response("websocket upgrade failed", { status: 500 });
         }
         return undefined;
       }
-
       const hostHeader = request.headers.get("host");
       if (!hostHeader) {
         return errorResponse(400, "bad-host");
@@ -114,21 +122,58 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
         log.warn("public request to offline exposure", { hostname: host });
         return errorResponse(503, "offline");
       }
+
+      if (isUpgrade) {
+        const info = binding.owner.prepareBridge(
+          url.pathname,
+          url.search.replace(/^\?/, ""),
+          filterRequestHeaders(headersToEntries(request.headers)),
+        );
+        const data: PublicBridgeData = { bridge: { owner: binding.owner, info } };
+        const upgraded = server.upgrade(request, { data });
+        if (!upgraded) {
+          binding.owner.releaseBridge(info);
+          return errorResponse(500, "upgrade-failed");
+        }
+        return undefined;
+      }
       return binding.owner.forwardRequest(request);
     },
     websocket: {
       open(ws): void {
-        const conn = new AgentConnection(ws as ServerWebSocket<unknown>, deps);
-        connections.set(ws as ServerWebSocket<unknown>, conn);
+        const socket = ws as ServerWebSocket<PublicBridgeData>;
+        const bridge = socket.data?.bridge;
+        if (bridge) {
+          bridge.owner.attachPublic(bridge.info, socket as unknown as ServerWebSocket<unknown>);
+          return;
+        }
+        const conn = new AgentConnection(socket as unknown as ServerWebSocket<unknown>, deps);
+        connections.set(socket as unknown as ServerWebSocket<unknown>, conn);
         conn.onOpen();
       },
       message(ws, message): void {
+        const socket = ws as ServerWebSocket<PublicBridgeData>;
+        const bridge = socket.data?.bridge;
+        if (bridge) {
+          bridge.owner.deliverFromPublic(bridge.info.connId, message as string | Uint8Array);
+          return;
+        }
         connections
-          .get(ws as ServerWebSocket<unknown>)
+          .get(socket as unknown as ServerWebSocket<unknown>)
           ?.handleMessage(message as string | Uint8Array);
       },
-      close(ws): void {
-        connections.get(ws as ServerWebSocket<unknown>)?.dispose();
+      close(ws, code, reason): void {
+        const socket = ws as ServerWebSocket<PublicBridgeData>;
+        const bridge = socket.data?.bridge;
+        if (bridge) {
+          bridge.owner.publicClosed(
+            bridge.info.connId,
+            typeof code === "number" ? code : 1006,
+            typeof reason === "string" ? reason : "",
+          );
+          return;
+        }
+        connections.get(socket as unknown as ServerWebSocket<unknown>)?.dispose();
       },
     },
   });

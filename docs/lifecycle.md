@@ -87,6 +87,8 @@ Rules:
   `req-body`.
 - Frames for one stream are ordered; independent streams may interleave freely.
 - Either side cancels with `abort {streamId, reason}`; both sides then release the stream.
+- An agent `abort` sent after its `res-head` signals a truncated origin response: the relay
+  answers the public client with `502 upstream-aborted` instead of a short-but-valid body.
 - Hop-by-hop headers (`connection`, `keep-alive`, `transfer-encoding`, ...) are stripped by the
   endpoints before framing.
 
@@ -114,7 +116,11 @@ Browser --> Relay                         Agent --> Origin server
 
 - Both peers send `ping {nonce}` every 25–30 s (Bun caps socket `idleTimeout` at 255 s).
 - The receiving peer answers `pong {nonce}` immediately.
-- A peer that sees no traffic (including pongs) for two intervals closes the tunnel as dead.
+- Any incoming frame refreshes the peer-liveness clock.
+- A peer that sees no traffic for more than 2.5 intervals closes the tunnel as dead.
+  The relay uses `close(4000, "heartbeat timeout")`; the agent signals an `error` frame first,
+  then closes with 1000. Reserved codes (1004/1005/1006/1015) are never put on the wire — they
+  are normalized (to 1000/1011 respectively) before being forwarded across bridges.
 
 ## 7. Close
 
