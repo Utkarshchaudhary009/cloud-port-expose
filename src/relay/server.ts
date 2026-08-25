@@ -162,11 +162,15 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
           .get(socket as unknown as ServerWebSocket<unknown>)
           ?.handleMessage(message as string | Uint8Array);
       },
-      close(ws): void {
+      close(ws, code, reason): void {
         const socket = ws as ServerWebSocket<PublicBridgeData>;
         const bridge = socket.data?.bridge;
         if (bridge) {
-          bridge.owner.publicClosed(bridge.info.connId, 1006, "public client disconnected");
+          bridge.owner.publicClosed(
+            bridge.info.connId,
+            typeof code === "number" ? code : 1006,
+            typeof reason === "string" ? reason : "",
+          );
           return;
         }
         connections.get(socket as unknown as ServerWebSocket<unknown>)?.dispose();

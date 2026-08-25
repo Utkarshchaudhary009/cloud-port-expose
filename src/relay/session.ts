@@ -367,7 +367,12 @@ export class AgentConnection {
     const existed = this.publicSockets.delete(connId);
     if (existed) {
       this.log.info("public websocket closed", { connId });
-      this.send({ t: "ws-close", connId, code, reason: reason.slice(0, 120) });
+      this.send({
+        t: "ws-close",
+        connId,
+        code: normalizeCloseCode(code),
+        reason: reason.slice(0, 120),
+      });
     }
   }
 
@@ -386,7 +391,7 @@ export class AgentConnection {
       return;
     }
     try {
-      entry.socket.close(msg.code, msg.reason.slice(0, 120));
+      entry.socket.close(normalizeCloseCode(msg.code), msg.reason.slice(0, 120));
     } catch {
       // already closed
     }
@@ -612,6 +617,18 @@ export class AgentConnection {
       // socket already closed
     }
   }
+}
+
+const RESERVED_CLOSE_CODES = new Set([1004, 1005, 1006, 1015]);
+
+export function normalizeCloseCode(code: number): number {
+  if (code === 1005 || code === 0 || !Number.isFinite(code)) {
+    return 1000;
+  }
+  if (RESERVED_CLOSE_CODES.has(code)) {
+    return 1011;
+  }
+  return code;
 }
 
 function classify(

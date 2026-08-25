@@ -117,8 +117,10 @@ Browser --> Relay                         Agent --> Origin server
 - Both peers send `ping {nonce}` every 25–30 s (Bun caps socket `idleTimeout` at 255 s).
 - The receiving peer answers `pong {nonce}` immediately.
 - Any incoming frame refreshes the peer-liveness clock.
-- A peer that sees no traffic for more than 2.5 intervals closes the tunnel as dead
-  (`close(4000, "heartbeat timeout")`).
+- A peer that sees no traffic for more than 2.5 intervals closes the tunnel as dead.
+  The relay uses `close(4000, "heartbeat timeout")`; the agent signals an `error` frame first,
+  then closes with 1000. Reserved codes (1004/1005/1006/1015) are never put on the wire — they
+  are normalized (to 1000/1011 respectively) before being forwarded across bridges.
 
 ## 7. Close
 
