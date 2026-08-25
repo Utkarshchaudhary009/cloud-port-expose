@@ -98,13 +98,13 @@ A buildable repository with a documented protocol skeleton and test harness.
 
 ### Tasks
 
-- [ ] Implement relay WebSocket listener.
-- [ ] Implement client outbound WebSocket connection.
-- [ ] Implement tunnel/session identifiers.
-- [ ] Implement forwarding of HTTP request metadata.
-- [ ] Implement forwarding of HTTP response metadata and body.
-- [ ] Implement connection cleanup on either side.
-- [ ] Add structured connection/error logging.
+- [x] Implement relay WebSocket listener.
+- [x] Implement client outbound WebSocket connection.
+- [x] Implement tunnel/session identifiers.
+- [x] Implement forwarding of HTTP request metadata.
+- [x] Implement forwarding of HTTP response metadata and body.
+- [x] Implement connection cleanup on either side.
+- [x] Add structured connection/error logging.
 
 ### Deliverable
 
@@ -112,13 +112,13 @@ A command or test harness can expose a local HTTP server through a generated rel
 
 ### Verification
 
-- [ ] Start a local HTTP server.
-- [ ] Start the expose client against that local port.
-- [ ] Receive a public relay URL.
-- [ ] Request the public URL from a separate process/device.
-- [ ] Verify status code, headers, body, and query parameters survive the tunnel.
-- [ ] Kill the client and verify the relay reports the exposure as offline.
-- [ ] Reconnect the client and verify a new session can be established.
+- [x] Start a local HTTP server.
+- [x] Start the expose client against that local port.
+- [x] Receive a public relay URL.
+- [x] Request the public URL from a separate process/device.
+- [x] Verify status code, headers, body, and query parameters survive the tunnel.
+- [x] Kill the client and verify the relay reports the exposure as offline.
+- [x] Reconnect the client and verify a new session can be established.
 
 ---
 
@@ -132,6 +132,7 @@ A command or test harness can expose a local HTTP server through a generated rel
 - [ ] Preserve bidirectional message ordering.
 - [ ] Support streaming request/response bodies.
 - [ ] Handle half-close/disconnect semantics.
+- [ ] Signal truncated responses: if the origin dies after headers were forwarded, the tunnel must not present the body as complete.
 - [ ] Add heartbeat/keepalive support (application-level ping/pong at 25–30 s; Bun caps socket `idleTimeout` at 255 s).
 - [ ] Add reconnect behavior without corrupting a live session.
 
@@ -223,7 +224,9 @@ localhost:3773
 
 # Phase 6 — CLI / Agent UX
 
-**Goal:** Make the tunnel usable from a terminal, Docker container, VM, devcontainer, and CI environment.
+**Goal:** Make the tunnel usable from a terminal, Docker container, VM, devcontainer, and CI environment — and from AI agents (LLM-driven automation) calling the CLI programmatically.
+
+> **Terminology:** In this phase, "agent" means an AI agent or automated client invoking the CLI — not the tunnel agent process (`src/agent`) that dials the relay. Where ambiguity is possible, say "AI agent" vs "tunnel agent".
 
 ### Tasks
 
@@ -233,11 +236,13 @@ localhost:3773
 - [ ] Implement named exposure flags.
 - [ ] Implement environment-variable configuration for non-interactive environments.
 - [ ] Provide concise success/error output.
+- [ ] AI-agent-friendly errors: every error exit names the failing check and prints one actionable next step (exact command/env var to fix or proceed).
+- [ ] Machine-readable output: every command accepts `--json`, emitting exactly one stable-schema JSON object on stdout (success or failure); human-readable text remains the default mode.
 - [ ] Add `--help`, `--version`, and diagnostics.
 
 ### Deliverable
 
-A user can expose a port with one command and receive the endpoint immediately.
+A user can expose a port with one command and receive the endpoint immediately. An AI agent can drive the CLI entirely through `--json` and act on structured errors without scraping free text.
 
 ### Verification
 
@@ -247,6 +252,8 @@ A user can expose a port with one command and receive the endpoint immediately.
 - [ ] Non-interactive authentication works with documented environment variables.
 - [ ] `cloud-expose 3000` successfully exposes a local HTTP server.
 - [ ] `cloud-expose 3773 --name example` produces the expected named endpoint.
+- [ ] Every command's `--json` output parses as a single JSON object on both success and failure paths.
+- [ ] Each failure path's output contains an actionable next-step suggestion.
 
 ---
 

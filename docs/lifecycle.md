@@ -55,6 +55,8 @@ Agent                          Relay
 - Credentials are sent only inside this frame — never in URLs, query strings, or logs.
 - Failure codes: `invalid-token`, `revoked-token`, `expired-token`, `malformed`.
 - All subsequent control messages require successful authentication.
+- **Phasing note:** enforcement lands in Phase 4. Until then relays accept unauthenticated
+  sessions and agents skip this step entirely.
 
 ## 3. Expose
 
@@ -124,5 +126,12 @@ Browser --> Relay                         Agent --> Origin server
 
 - The agent dials out again and receives a fresh `sessionId` (old state is gone).
 - It re-sends `expose` with the same `exposureId`/`name`, so the stable hostname binds back to
-  the new session once Phase 5 lands; before that, hostnames are per-session.
+  the new session. Until persistent stable naming lands in Phase 5, the relay remembers
+  generated slugs per `exposureId` in a bounded in-memory cache (oldest evicted first): a
+  reconnecting agent re-binds to its previous hostname while the relay process stays up; a
+  restarted relay forgets slugs.
 - In-flight streams from the dead session are not recoverable; clients retry at the HTTP layer.
+- Retired streams (e.g., timed out at the relay) tolerate late frames from the agent: late
+  `res-*` frames for retired streams are dropped instead of killing the session. The relay
+  notifies the agent with an `abort` frame when it retires a stream or sees the public client
+  disconnect.

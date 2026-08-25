@@ -5,8 +5,25 @@ Securely expose local ports over the internet through an outbound tunnel.
 ## Status
 
 Early development — the implementation plan in [`docs/plan.md`](docs/plan.md) is the source of
-truth. Phase 1 (repository foundation & protocol skeleton) is complete and under review;
-Phase 2 (minimal outbound tunnel) is next.
+truth. Phase 1 (foundation & protocol) is merged; **Phase 2 (minimal outbound tunnel)** is under
+review. Authentication, WebSocket bridging, TLS, and named exposures arrive in later phases.
+
+## Quickstart (dev, no auth/TLS yet)
+
+```sh
+# terminal 1 — start a relay on :8080
+bun -e 'import { startRelay } from "./src/relay/index";
+         const relay = await startRelay({ port: 8080 });
+         console.log("agent endpoint:", relay.agentUrl);'
+
+# terminal 2 — expose your local app (e.g. dev server on :3000)
+bun src/cli/main.ts 3000 --relay ws://127.0.0.1:8080
+# ✓ Port 3000 exposed
+# http://<slug>.localhost:8080
+```
+
+Any process that can reach the relay can now open the printed URL (`*.localhost` resolves to
+loopback in browsers; other machines need an `/etc/hosts` entry until real DNS lands in Phase 5).
 
 ## Requirements
 
