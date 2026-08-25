@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Planning
+> **Status:** Implementation in progress — Phases 1 complete; next up: Phase 2.
 >
 > **Source of truth:** This file is the authoritative implementation plan for `cloud-port-expose`. The repository, issue discussions, chat history, and agent memory must not override this file.
 
@@ -69,12 +69,12 @@ Do not silently reorder phases. If the architecture must change, update this fil
 
 ### Tasks
 
-- [ ] Define project structure for `cli`, `agent`, `relay`, `protocol`, and tests.
-- [ ] Configure Bun + TypeScript with strict type checking.
-- [ ] Add consistent formatting/linting and test scripts.
-- [ ] Define the initial tunnel message types.
-- [ ] Document connection lifecycle: connect, authenticate, expose, forward, close, reconnect.
-- [ ] Add a minimal local TCP/HTTP test fixture.
+- [x] Define project structure for `cli`, `agent`, `relay`, `protocol`, and tests.
+- [x] Configure Bun + TypeScript with strict type checking.
+- [x] Add consistent formatting/linting and test scripts.
+- [x] Define the initial tunnel message types.
+- [x] Document connection lifecycle: connect, authenticate, expose, forward, close, reconnect.
+- [x] Add a minimal local TCP/HTTP test fixture.
 
 ### Deliverable
 
@@ -82,11 +82,11 @@ A buildable repository with a documented protocol skeleton and test harness.
 
 ### Verification
 
-- [ ] `bun install` completes successfully.
-- [ ] TypeScript typecheck passes.
-- [ ] Test runner executes successfully.
-- [ ] Protocol types compile and can serialize/deserialize a sample message.
-- [ ] No runtime service is exposed yet; Phase 1 is protocol-only.
+- [x] `bun install` completes successfully.
+- [x] TypeScript typecheck passes.
+- [x] Test runner executes successfully.
+- [x] Protocol types compile and can serialize/deserialize a sample message.
+- [x] No runtime service is exposed yet; Phase 1 is protocol-only.
 
 ---
 
