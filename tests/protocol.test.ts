@@ -106,10 +106,58 @@ describe("protocol codec", () => {
     const head = (headers: string) =>
       `{"t":"req-head","streamId":1,"method":"GET","path":"/","query":"","headers":${headers}}`;
     expect(() => decodeMessage(head('{"x-evil":"1\\r\\nHost: injected"}'))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head(`{"x-ctrl":"prefix\\u0001suffix"}`))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head(`{"x-vt":"line1\\u000bline2"}`))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head(`{"x-del":"end\\u007f"}`))).toThrow(ProtocolError);
     expect(() => decodeMessage(head('{"bad\\nname":"v"}'))).toThrow(ProtocolError);
     expect(() => decodeMessage(head('{"":"v"}'))).toThrow(ProtocolError);
     expect(() => decodeMessage(head('{"__proto__":"x"}'))).toThrow(ProtocolError);
     expect(() => decodeMessage(head('{"x-ok":"value with spaces, fine"}'))).not.toThrow();
+    expect(() => decodeMessage(head('{"x-tab":"col1\\tcol2"}'))).not.toThrow();
+  });
+
+  test("every message type enforces its unknown-field allowlist", () => {
+    for (const msg of SAMPLE_MESSAGES) {
+      const poisoned = JSON.parse(encodeMessage(msg)) as Record<string, unknown>;
+      poisoned.bogusExtraField = 1;
+      try {
+        decodeMessage(JSON.stringify(poisoned));
+        throw new Error(`expected ProtocolError for type "${msg.t}"`);
+      } catch (err) {
+        if (!(err instanceof ProtocolError)) {
+          throw err;
+        }
+        expect(err.message).toContain("unknown field");
+      }
+    }
+  });
+
+  test("sample messages cover every protocol message type", () => {
+    const allTypes: string[] = [
+      "hello",
+      "welcome",
+      "auth",
+      "auth-ok",
+      "auth-error",
+      "expose",
+      "exposed",
+      "unexpose",
+      "unexposed",
+      "ping",
+      "pong",
+      "error",
+      "req-head",
+      "req-body",
+      "res-head",
+      "res-body",
+      "abort",
+      "ws-open",
+      "ws-data",
+      "ws-close",
+    ];
+    expect(new Set(SAMPLE_MESSAGES.map((m) => m.t))).toEqual(
+      new Set(allTypes) as Set<TunnelMsg["t"]>,
+    );
   });
 
   test("rejects unknown message type", () => {

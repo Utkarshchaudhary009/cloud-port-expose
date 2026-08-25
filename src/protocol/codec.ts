@@ -144,12 +144,22 @@ function readHeaders(obj: Record<string, unknown>, key: string): MessageHeaders 
     if (name === "__proto__" || name === "constructor" || name === "prototype") {
       throw new ProtocolError(`field "${key}" contains forbidden header name "${name}"`);
     }
-    if (/[\r\n\0]/.test(headerValue)) {
+    if (containsDisallowedControlChars(headerValue)) {
       throw new ProtocolError(`field "${key}" contains control characters in a header value`);
     }
     headers[name] = headerValue;
   }
   return headers;
+}
+
+function containsDisallowedControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if ((code < 0x20 && code !== 0x09) || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function readLiteral<T extends string>(
