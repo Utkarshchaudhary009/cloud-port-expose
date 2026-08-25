@@ -48,22 +48,32 @@ describe("http origin fixture", () => {
 describe("tcp echo fixture", () => {
   test("echoes bytes back to the client", async () => {
     echoServer = await startTcpEcho();
-    const received: Uint8Array[] = [];
+    const chunks: Uint8Array[] = [];
+    let total = 0;
     const done = Promise.withResolvers<void>();
+    const payload = new TextEncoder().encode("ping-through-tcp");
     const socket = await Bun.connect({
       hostname: echoServer.hostname,
       port: echoServer.port,
       socket: {
         data(_socket, data) {
-          received.push(data);
-          done.resolve();
+          chunks.push(data);
+          total += data.byteLength;
+          if (total >= payload.byteLength) {
+            done.resolve();
+          }
         },
       },
     });
-    const payload = new TextEncoder().encode("ping-through-tcp");
     socket.write(payload);
     await done.promise;
     socket.end();
-    expect(new TextDecoder().decode(received[0])).toBe("ping-through-tcp");
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    expect(new TextDecoder().decode(merged)).toBe("ping-through-tcp");
   });
 });

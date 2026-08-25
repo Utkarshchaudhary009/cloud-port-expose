@@ -10,9 +10,12 @@ Message types referenced here are defined in `src/protocol/messages.ts`; wire fo
 - Each message is one JSON object in one WebSocket text frame: `{"t": "<type>", ...fields}`.
 - Binary payloads (HTTP bodies, WebSocket frames) are carried as base64 strings inside JSON.
   Text WebSocket payloads use `"encoding": "utf8"`; binary uses `"encoding": "base64"`.
-- Unknown message types, unknown fields, wrong field types, and control characters
-  (`\r`, `\n`, NUL) in header names/values are rejected at decode time (`ProtocolError`).
-  Forward compatibility is handled by the protocol version, not silent leniency.
+- HTTP/WebSocket header fields travel as ordered `[name, value]` pair lists, preserving order
+  and repeated fields (e.g. multiple `Set-Cookie`).
+- Unknown message types, unknown fields (including within `error.context`), wrong field types,
+  and control characters (`\r`, `\n`, NUL, other C0 except HTAB, plus DEL) in header names/values
+  are rejected at decode time (`ProtocolError`). Forward compatibility is handled by the protocol
+  version, not silent leniency.
 - Some frame types flow in both directions: `ping`/`pong` (either peer initiates),
   `abort` (either side cancels a stream), and `ws-data`/`ws-close` (bridged WebSockets carry
   payloads and closes both ways). Direction is determined by session state, not by the type.

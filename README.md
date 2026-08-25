@@ -5,8 +5,8 @@ Securely expose local ports over the internet through an outbound tunnel.
 ## Status
 
 Early development — the implementation plan in [`docs/plan.md`](docs/plan.md) is the source of
-truth. Current phase: **Phase 1 — Repository Foundation & Protocol Skeleton** (protocol types
-only; no runtime networking service yet).
+truth. Phase 1 (repository foundation & protocol skeleton) is complete and under review;
+Phase 2 (minimal outbound tunnel) is next.
 
 ## Requirements
 

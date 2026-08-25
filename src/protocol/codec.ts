@@ -10,8 +10,8 @@ import type {
   ErrorMsg,
   ExposedMsg,
   ExposeMsg,
+  HeaderEntries,
   HelloMsg,
-  MessageHeaders,
   PingMsg,
   PongMsg,
   RequestBodyMsg,
@@ -42,6 +42,8 @@ const AUTH_ERROR_CODES: readonly AuthErrorCode[] = [
 ];
 
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.`^_|~-]+$/;
+
+const ERROR_CONTEXT_FIELDS: readonly string[] = ["exposureId", "streamId", "connId"];
 
 const ERROR_CODES: readonly ErrorCode[] = [
   "bad-request",
@@ -128,16 +130,23 @@ function readBoolean(obj: Record<string, unknown>, key: string): boolean {
   return value;
 }
 
-function readHeaders(obj: Record<string, unknown>, key: string): MessageHeaders {
+function readHeaders(obj: Record<string, unknown>, key: string): HeaderEntries {
   const value = obj[key];
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ProtocolError(`field "${key}" must be an object of string values`);
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`field "${key}" must be an array of [name, value] pairs`);
   }
-  const headers: MessageHeaders = {};
-  for (const [name, headerValue] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof headerValue !== "string") {
-      throw new ProtocolError(`field "${key}" must contain only string values`);
+  const headers: [string, string][] = [];
+  for (const entry of value) {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 2 ||
+      typeof entry[0] !== "string" ||
+      typeof (entry as unknown[])[1] !== "string"
+    ) {
+      throw new ProtocolError(`field "${key}" must contain only [string, string] pairs`);
     }
+    const name = entry[0];
+    const headerValue = entry[1];
     if (!HEADER_NAME_PATTERN.test(name)) {
       throw new ProtocolError(`field "${key}" contains invalid header name "${name}"`);
     }
@@ -147,7 +156,7 @@ function readHeaders(obj: Record<string, unknown>, key: string): MessageHeaders 
     if (containsDisallowedControlChars(headerValue)) {
       throw new ProtocolError(`field "${key}" contains control characters in a header value`);
     }
-    headers[name] = headerValue;
+    headers.push([name, headerValue]);
   }
   return headers;
 }
@@ -215,6 +224,11 @@ const validators: Record<string, Validator> = {
     let context: ErrorContext | undefined;
     if (contextValue !== undefined) {
       const ctx = assertObject(contextValue);
+      for (const field of Object.keys(ctx)) {
+        if (!ERROR_CONTEXT_FIELDS.includes(field)) {
+          throw new ProtocolError(`unknown field "${field}" in error context`);
+        }
+      }
       context = {};
       const exposureId = readOptionalString(ctx, "exposureId");
       if (exposureId !== undefined) {

@@ -34,7 +34,10 @@ const SAMPLE_MESSAGES: TunnelMsg[] = [
     method: "GET",
     path: "/index.html",
     query: "a=1&b=two",
-    headers: { host: "example.test", "x-forwarded-for": "203.0.113.9" },
+    headers: [
+      ["host", "example.test"],
+      ["x-forwarded-for", "203.0.113.9"],
+    ],
   },
   {
     t: "req-body",
@@ -46,7 +49,7 @@ const SAMPLE_MESSAGES: TunnelMsg[] = [
     t: "res-head",
     streamId: 1,
     status: 418,
-    headers: { "content-type": "text/plain; charset=utf-8" },
+    headers: [["content-type", "text/plain; charset=utf-8"]],
   },
   {
     t: "res-body",
@@ -60,7 +63,7 @@ const SAMPLE_MESSAGES: TunnelMsg[] = [
     connId: 5,
     path: "/ws",
     query: "room=lobby",
-    headers: { "sec-websocket-protocol": "chat" },
+    headers: [["sec-websocket-protocol", "chat"]],
   },
   { t: "ws-data", connId: 5, encoding: "utf8", data: '{"hello":"world"}' },
   { t: "ws-data", connId: 5, encoding: "base64", data: encodeBase64(new Uint8Array([1, 2, 3])) },
@@ -100,20 +103,42 @@ describe("protocol codec", () => {
     expect(() => decodeMessage('{"t":"welcome","sessionId":"s1","admin":true}')).toThrow(
       ProtocolError,
     );
+    expect(() =>
+      decodeMessage('{"t":"error","code":"bad-request","message":"x","context":{"typo":true}}'),
+    ).toThrow(ProtocolError);
   });
 
-  test("rejects control characters and invalid header names", () => {
+  test("rejects control characters and invalid header entries", () => {
     const head = (headers: string) =>
       `{"t":"req-head","streamId":1,"method":"GET","path":"/","query":"","headers":${headers}}`;
-    expect(() => decodeMessage(head('{"x-evil":"1\\r\\nHost: injected"}'))).toThrow(ProtocolError);
-    expect(() => decodeMessage(head(`{"x-ctrl":"prefix\\u0001suffix"}`))).toThrow(ProtocolError);
-    expect(() => decodeMessage(head(`{"x-vt":"line1\\u000bline2"}`))).toThrow(ProtocolError);
-    expect(() => decodeMessage(head(`{"x-del":"end\\u007f"}`))).toThrow(ProtocolError);
-    expect(() => decodeMessage(head('{"bad\\nname":"v"}'))).toThrow(ProtocolError);
-    expect(() => decodeMessage(head('{"":"v"}'))).toThrow(ProtocolError);
-    expect(() => decodeMessage(head('{"__proto__":"x"}'))).toThrow(ProtocolError);
-    expect(() => decodeMessage(head('{"x-ok":"value with spaces, fine"}'))).not.toThrow();
-    expect(() => decodeMessage(head('{"x-tab":"col1\\tcol2"}'))).not.toThrow();
+    expect(() => decodeMessage(head('[["x-evil","1\\r\\nHost: injected"]]'))).toThrow(
+      ProtocolError,
+    );
+    expect(() => decodeMessage(head(`[["x-ctrl","prefix\\u0001suffix"]]`))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head(`[["x-vt","line1\\u000bline2"]]`))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head(`[["x-del","end\\u007f"]]`))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head('[["bad\\nname","v"]]'))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head('[["","v"]]'))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head('[["__proto__","x"]]'))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head('[["solo"]]'))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head('{"host":"object-form-now-rejected"}'))).toThrow(ProtocolError);
+    expect(() => decodeMessage(head('[["x-ok","value with spaces, fine"]]'))).not.toThrow();
+    expect(() => decodeMessage(head('[["x-tab","col1\\tcol2"]]'))).not.toThrow();
+  });
+
+  test("repeated header fields are preserved in order", () => {
+    const decoded = decodeMessage(
+      `{"t":"res-head","streamId":1,"status":200,"headers":[["set-cookie","a=1; Path=/"],["set-cookie","b=2; Path=/"]]}`,
+    );
+    expect(decoded).toEqual({
+      t: "res-head",
+      streamId: 1,
+      status: 200,
+      headers: [
+        ["set-cookie", "a=1; Path=/"],
+        ["set-cookie", "b=2; Path=/"],
+      ],
+    });
   });
 
   test("every message type enforces its unknown-field allowlist", () => {

@@ -1,6 +1,8 @@
 export const PROTOCOL_VERSION = 1;
 
-export type MessageHeaders = Record<string, string>;
+export type HeaderEntry = readonly [name: string, value: string];
+
+export type HeaderEntries = readonly HeaderEntry[];
 
 export type Encoding = "utf8" | "base64";
 
@@ -92,7 +94,7 @@ export interface RequestHeadMsg {
   method: string;
   path: string;
   query: string;
-  headers: MessageHeaders;
+  headers: HeaderEntries;
 }
 
 export interface RequestBodyMsg {
@@ -106,7 +108,7 @@ export interface ResponseHeadMsg {
   t: "res-head";
   streamId: number;
   status: number;
-  headers: MessageHeaders;
+  headers: HeaderEntries;
 }
 
 export interface ResponseBodyMsg {
@@ -127,7 +129,7 @@ export interface WsOpenMsg {
   connId: number;
   path: string;
   query: string;
-  headers: MessageHeaders;
+  headers: HeaderEntries;
 }
 
 export interface WsDataMsg {
