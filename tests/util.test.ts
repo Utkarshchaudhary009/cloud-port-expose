@@ -37,7 +37,10 @@ describe("http header filtering", () => {
     headers.append("set-cookie", "a=1");
     headers.append("set-cookie", "b=2");
     const entries = headersToEntries(headers);
-    expect(entries.filter(([name]) => name === "set-cookie")).toHaveLength(2);
+    expect(entries).toEqual([
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+    ]);
   });
 });
 

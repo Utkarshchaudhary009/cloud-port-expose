@@ -15,6 +15,8 @@ const REDACTED_KEY_PATTERNS = [
   "password",
   "api_key",
   "api-key",
+  "apikey",
+  "bearer",
 ];
 
 function isSensitiveKey(key: string): boolean {

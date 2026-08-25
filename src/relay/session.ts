@@ -163,17 +163,23 @@ export class AgentConnection {
 
     let resolveHead!: (head: PendingHead) => void;
     let resolveBody!: () => void;
-    let rejectExchange!: (error: Error) => void;
+    let rejectHead!: (error: Error) => void;
+    let rejectBody!: (error: Error) => void;
     const headPromise = new Promise<PendingHead>((resolve, reject) => {
       resolveHead = resolve;
-      rejectExchange = reject;
+      rejectHead = reject;
     });
-    const bodyPromise = new Promise<void>((resolve) => {
+    const bodyPromise = new Promise<void>((resolve, reject) => {
       resolveBody = resolve;
+      rejectBody = reject;
     });
     headPromise.catch(() => {});
     bodyPromise.catch(() => {});
-    this.waiters.set(streamId, { resolveHead, resolveBody, reject: rejectExchange });
+    const rejectBoth = (error: Error): void => {
+      rejectHead(error);
+      rejectBody(error);
+    };
+    this.waiters.set(streamId, { resolveHead, resolveBody, reject: rejectBoth });
 
     const notifyAgentAbort = (reason: string): void => {
       this.send({ t: "abort", streamId, reason });
@@ -241,14 +247,10 @@ export class AgentConnection {
     }
   }
 
-  dispose(reason = "unknown"): void {
+  dispose(): void {
     if (this.disposed) {
       return;
     }
-    this.log.warn("TRACE dispose", {
-      reason,
-      stack: new Error().stack?.split("\n").slice(1, 4).join(" | "),
-    });
     this.disposed = true;
     for (const streamId of [...this.waiters.keys()]) {
       this.rejectExchange(

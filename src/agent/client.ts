@@ -137,9 +137,12 @@ export class ExposeAgent {
       });
 
       socket.addEventListener("message", (event) => {
-        void this.handleMessage(
+        this.handleMessage(
           typeof event.data === "string" ? event.data : new Uint8Array(event.data),
-        );
+        ).catch((error) => {
+          this.log.error("message handling failed", { err: (error as Error).message });
+          void this.close();
+        });
       });
 
       socket.addEventListener("error", () => {
@@ -189,7 +192,14 @@ export class ExposeAgent {
     }
     this.inflight.clear();
     this.failAllPendingBodies(new Error("agent shutting down"), /* clearMap */ true);
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      if (socket.readyState === WebSocket.CONNECTING) {
+        const error = new AgentError("connection closed before handshake completed");
+        this.welcome?.reject(error);
+        this.exposed?.reject(error);
+        this.welcome = undefined;
+        this.exposed = undefined;
+      }
       await new Promise<void>((resolve) => {
         socket.addEventListener("close", () => resolve(), { once: true });
         try {
@@ -239,9 +249,11 @@ export class ExposeAgent {
       case "ping":
         this.send({ t: "pong", nonce: msg.nonce });
         return;
-      case "abort":
+      case "abort": {
+        this.inflight.get(msg.streamId)?.abort();
         this.failRequestBody(msg.streamId, new Error(`relay aborted stream: ${msg.reason}`));
         return;
+      }
       case "unexposed":
       case "pong":
         return;
