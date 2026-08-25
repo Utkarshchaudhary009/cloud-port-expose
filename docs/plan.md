@@ -38,6 +38,16 @@ https://agy-usage.expose.dev
 6. **Small protocol first.** Prove the tunnel with the smallest reliable protocol before adding dashboards, billing, or complex orchestration.
 7. **Every phase ends in verification.** Code is not considered complete until its verification criteria pass.
 
+## Verified Technical Constraints
+
+Source-verified research findings (2026-08) that the implementation must respect:
+
+- **Runtime is Bun ≥ 1.4.0.** WebSocket backpressure/stream-cancellation fixes landed in the 1.4 cycle; earlier versions had unbounded buffering with slow clients (oven-sh/bun#32469). Pin the version and run slow-client tests early.
+- **No HTTP/2 server.** `Bun.serve` speaks HTTP/1.1 only (h2 support is an open PR, not shipped). Deploy the relay where HTTP/1.1 is accepted, or terminate TLS/h2 upstream of it.
+- **WebSocket idle timeout cap.** Bun caps socket `idleTimeout` at 255 s. The agent ↔ relay channel therefore needs application-level ping/pong at a 25–30 s interval (the industry-standard heartbeat window used by ngrok/rathole-class systems).
+- **Terminate-and-bridge WebSockets.** Bun offers no socket hijack/splice, so the relay terminates each public upgrade and bridges it to the agent over the tunnel connection. This is the standard ngrok-style design.
+- **CLI packaging facts.** `bun build --compile` yields ~55–60 MB standalone binaries, cross-compiling to linux-x64/arm64 (+musl), macOS, and Windows. Binaries need glibc (debian-slim) or musl (alpine) bases — `FROM scratch` is unsupported. Do not gate behavior on `NODE_ENV` (baked in at build time).
+
 ## Progress Rules
 
 Use GitHub task checkboxes as the only progress tracker.
@@ -84,6 +94,8 @@ A buildable repository with a documented protocol skeleton and test harness.
 
 **Goal:** A local client connects outbound to the relay and makes one local HTTP port reachable through the relay.
 
+> **Scope note:** Until the public infrastructure tasks in Phase 5 exist, verification runs against loopback hostnames (`*.localhost` resolves to loopback in Chrome/Firefox; `/etc/hosts` entries cover other clients). "Request from a separate process/device" is satisfied by any second process or machine that can reach the relay's address.
+
 ### Tasks
 
 - [ ] Implement relay WebSocket listener.
@@ -120,7 +132,7 @@ A command or test harness can expose a local HTTP server through a generated rel
 - [ ] Preserve bidirectional message ordering.
 - [ ] Support streaming request/response bodies.
 - [ ] Handle half-close/disconnect semantics.
-- [ ] Add heartbeat/keepalive support.
+- [ ] Add heartbeat/keepalive support (application-level ping/pong at 25–30 s; Bun caps socket `idleTimeout` at 255 s).
 - [ ] Add reconnect behavior without corrupting a live session.
 
 ### Deliverable
@@ -176,6 +188,9 @@ Only authorized clients can create tunnels and only authorized browser sessions 
 
 - [ ] Add exposure names/slugs.
 - [ ] Implement routing from hostname to exposure ID.
+- [ ] Provision the public exposure domain and a wildcard DNS record (`*.expose.<domain>` → relay IP).
+- [ ] Automate wildcard TLS issuance/renewal via ACME DNS-01 on the relay (a wildcard cert is required — Let's Encrypt allows only 50 new certs per registered domain per week, so per-subdomain certs exhaust quota).
+- [ ] Terminate TLS on the relay's public listener (:443/:80) and route by SNI/Host header.
 - [ ] Keep the hostname associated with the logical exposure rather than the process ID.
 - [ ] Define behavior when an exposure is offline.
 - [ ] Add collision/slug validation.
@@ -198,6 +213,7 @@ localhost:3773
 ### Verification
 
 - [ ] Named exposure can be created.
+- [ ] A real browser request to `https://<name>.<domain>` reaches the relay over trusted TLS.
 - [ ] Stable hostname routes to the correct connected client.
 - [ ] Reconnecting a new client preserves the same hostname.
 - [ ] Another user cannot claim an existing protected name.
@@ -240,7 +256,7 @@ A user can expose a port with one command and receive the endpoint immediately.
 
 ### Tasks
 
-- [ ] Publish an agent Docker image.
+- [ ] Publish an agent Docker image (debian-slim or alpine base; compiled Bun binaries cannot run `FROM scratch`).
 - [ ] Document running the agent alongside any application container.
 - [ ] Support container-to-host/local-network targeting as required.
 - [ ] Ensure the container needs only outbound connectivity.
@@ -266,8 +282,11 @@ A disposable Docker workspace can expose its own services without manual port fo
 
 **Goal:** Prove the original use case: a remote T3 Code server can be reached reliably from T3 Web through the tunnel.
 
+> **Reference:** T3 Code is [pingdotgg/t3code](https://github.com/pingdotgg/t3code) (open-source, MIT; default HTTP/WebSocket port 3773). The project is young and self-described as early — pin a specific release for all verification below.
+
 ### Tasks
 
+- [ ] Pin and document the exact T3 Code release used for verification.
 - [ ] Validate T3 server HTTP requirements.
 - [ ] Validate T3 WebSocket requirements.
 - [ ] Add a documented T3 container/start command.
