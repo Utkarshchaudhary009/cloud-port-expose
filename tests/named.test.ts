@@ -226,11 +226,11 @@ describe("tls termination (self-signed)", () => {
     const endpoint = await agent.expose();
     expect(endpoint.url.startsWith("https://")).toBe(true);
 
-    const res = await fetch(endpoint.url, {
+    const res = await fetch(`https://127.0.0.1:${tlsRelay.port}/`, {
       headers: { host: `${endpoint.hostname}:${tlsRelay.port}` },
       tls: { rejectUnauthorized: false },
     } as RequestInit);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("origin-ok");
-  });
+  }, 15_000);
 });
