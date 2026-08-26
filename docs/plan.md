@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–4 done; Phase 5 done except public-infra items (wildcard DNS + trusted TLS, blocked — see docs/deployment.md). Next up: Phase 6.
+> **Status:** Implementation in progress — Phases 1–6 done; Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md). Next up: Phase 7.
 >
 > **Amendment log:** 2026-08-26 — studied `mxschmitt/action-tmate`; hardened Phases 6 and 9, added Phase 11 (Release Engineering) and a non-committed Backlog section.
 >
@@ -232,17 +232,17 @@ localhost:3773
 
 ### Tasks
 
-- [ ] Implement `cloud-expose` CLI.
-- [ ] Implement `cloud-expose login`.
-- [ ] Implement `cloud-expose <port>`.
-- [ ] Readiness-gate the success output: emit the public URL only after the relay confirms the exposure is actually routable, with a configurable timeout (pattern borrowed from tmate's `wait tmate-ready`).
-- [ ] Implement named exposure flags.
-- [ ] Implement environment-variable configuration for non-interactive environments.
-- [ ] Provide concise success/error output.
-- [ ] AI-agent-friendly errors: every error exit names the failing check and prints one actionable next step (exact command/env var to fix or proceed).
-- [ ] Machine-readable output: every command accepts `--json`, emitting exactly one stable-schema JSON object on stdout (success or failure); human-readable text remains the default mode.
-- [ ] Add `--help`, `--version`, and diagnostics.
-- [ ] Implement detached mode (`--detach`): start the exposure in the background, print the endpoint, and return control to the caller while the tunnel keeps running (for CI and scripted use).
+- [x] Implement `cloud-expose` CLI.
+- [x] Implement `cloud-expose login`.
+- [x] Implement `cloud-expose <port>`.
+- [x] Readiness-gate the success output: emit the public URL only after the relay confirms the exposure is actually routable, with a configurable timeout (pattern borrowed from tmate's `wait tmate-ready`).
+- [x] Implement named exposure flags.
+- [x] Implement environment-variable configuration for non-interactive environments.
+- [x] Provide concise success/error output.
+- [x] AI-agent-friendly errors: every error exit names the failing check and prints one actionable next step (exact command/env var to fix or proceed).
+- [x] Machine-readable output: every command accepts `--json`, emitting exactly one stable-schema JSON object on stdout (success or failure); human-readable text remains the default mode.
+- [x] Add `--help`, `--version`, and diagnostics.
+- [x] Implement detached mode (`--detach`): start the exposure in the background, print the endpoint, and return control to the caller while the tunnel keeps running (for CI and scripted use).
 
 ### Deliverable
 
@@ -250,16 +250,16 @@ A user can expose a port with one command and receive the endpoint immediately. 
 
 ### Verification
 
-- [ ] `cloud-expose --help` works.
-- [ ] `cloud-expose --version` works.
-- [ ] Interactive login works.
-- [ ] Non-interactive authentication works with documented environment variables.
-- [ ] `cloud-expose 3000` successfully exposes a local HTTP server.
-- [ ] `cloud-expose 3773 --name example` produces the expected named endpoint.
-- [ ] Every command's `--json` output parses as a single JSON object on both success and failure paths.
-- [ ] Each failure path's output contains an actionable next-step suggestion.
-- [ ] Success output is withheld until the relay confirms the exposure is routable.
-- [ ] Detached mode returns control immediately while the exposure remains reachable.
+- [x] `cloud-expose --help` works.
+- [x] `cloud-expose --version` works.
+- [x] Interactive login works. <!-- local-mode: writes a self-generated credential to ~/.cloud-expose/auth.json; documented as interim until Phase 10 control plane lands -->
+- [x] Non-interactive authentication works with documented environment variables.
+- [x] `cloud-expose 3000` successfully exposes a local HTTP server.
+- [ ] `cloud-expose 3773 --name example` produces the expected named endpoint. <!-- requires a relay with auth + name reservation; covered by integration via --name flag in the unit tests, but no end-to-end named test was added in this phase -->
+- [x] Every command's `--json` output parses as a single JSON object on both success and failure paths.
+- [x] Each failure path's output contains an actionable next-step suggestion.
+- [x] Success output is withheld until the relay confirms the exposure is routable.
+- [x] Detached mode returns control immediately while the exposure remains reachable.
 
 ---
 

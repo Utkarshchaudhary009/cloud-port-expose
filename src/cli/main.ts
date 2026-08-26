@@ -6,8 +6,6 @@ import { ExposeAgent } from "../agent/client";
 import { generateClientToken } from "../auth/identity";
 import { CLI_DESCRIPTION, CLI_NAME } from ".";
 
-process.stderr.write(`[cli] starting pid=${process.pid} argv=${JSON.stringify(process.argv)}\n`);
-
 const VERSION = "0.1.0";
 const DEFAULT_CONFIG_DIR = join(homedir(), ".cloud-expose");
 const DEFAULT_AUTH_PATH = join(DEFAULT_CONFIG_DIR, "auth.json");
@@ -139,12 +137,7 @@ interface JsonError {
   nextStep: string;
 }
 
-function fail(
-  args: ParsedArgs,
-  code: string,
-  message: string,
-  nextStep: string,
-): number {
+function fail(args: ParsedArgs, code: string, message: string, nextStep: string): number {
   console.error(`✗ ${message}`);
   console.error(`  next step: ${nextStep}`);
   if (args.json) {
@@ -337,9 +330,11 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
 }
 
 function spawnDetached(args: ParsedArgs, relay: string, token: string | undefined): number {
+  // Re-exec through the bin entry so the child gets the same shebang/wrapper
+  // and the import.meta.main guard isn't required.
+  const binPath = join(import.meta.dir, "..", "..", "bin", "cloud-expose");
   const childArgs = [
-    "run",
-    "src/cli/main.ts",
+    binPath,
     String(args.port),
     "--relay",
     relay,
@@ -366,6 +361,9 @@ function spawnDetached(args: ParsedArgs, relay: string, token: string | undefine
     stderrBuf += chunk.toString("utf8");
   });
 
+  // We do NOT await the child. The child runs forever (until the tunnel is
+  // closed). We only wait until the child has emitted its first JSON line so
+  // we can relay the readiness confirmation to our caller.
   return new Promise<number>((resolve) => {
     const watchdog = setTimeout(() => {
       child.kill("SIGKILL");
@@ -373,76 +371,45 @@ function spawnDetached(args: ParsedArgs, relay: string, token: string | undefine
         fail(
           args,
           "detach-timeout",
-          `detached child did not print a result within ${args.readyTimeoutMs + 2_000}ms`,
+          `detached child did not confirm readiness within ${args.readyTimeoutMs + 2_000}ms`,
           "re-run without --detach to see the failure inline, or increase --ready-timeout",
         ),
       );
-    }, args.readyTimeoutMs + 2_000);
+    }, args.readyTimeoutMs + 5_000);
 
-    child.on("exit", (code) => {
-      clearTimeout(watchdog);
-      // Forward child's stderr to our stderr for the human-readable path.
-      if (stderrBuf.length > 0 && !args.json) {
-        process.stderr.write(stderrBuf);
-      }
-      if (code !== 0) {
-        // The child already printed either a JSON error (if --json) or a human error.
-        // If the child was running in non-json mode, mirror its failure to JSON for callers.
+    const checkReady = setInterval(() => {
+      const newlineAt = stdoutBuf.indexOf("\n");
+      if (newlineAt >= 0) {
+        clearInterval(checkReady);
+        clearTimeout(watchdog);
+        const line = stdoutBuf.slice(0, newlineAt).trim();
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          resolve(
+            fail(
+              args,
+              "detach-bad-output",
+              `detached child emitted unparseable output: ${line.slice(0, 200)}`,
+              "re-run without --detach for the full error",
+            ),
+          );
+          return;
+        }
+        // The child is now confirmed ready and running. Detach it from us so
+        // it survives our exit.
+        child.unref();
         if (args.json) {
-          // We couldn't capture the child's structured error; emit a wrapper.
-          console.log(
-            JSON.stringify({
-              ok: false,
-              error: {
-                code: "detach-failed",
-                message: `detached child exited with code ${code}`,
-                nextStep: "re-run without --detach for the full error",
-              },
-            }),
-          );
-        }
-        resolve(1);
-        return;
-      }
-      // Child succeeded: forward its JSON if our mode is JSON, else just confirm.
-      if (args.json) {
-        const trimmed = stdoutBuf.trim();
-        if (trimmed.length > 0) {
-          // The child emitted its own JSON; rewrite the "ok" payload so the
-          // detached=true / pid fields are visible to the parent caller.
-          try {
-            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-            console.log(
-              JSON.stringify({ ...parsed, ok: true, detached: true, pid: child.pid }),
-            );
-          } catch {
-            console.log(
-              JSON.stringify({
-                ok: true,
-                command: "expose",
-                detached: true,
-                pid: child.pid,
-                note: "child output was not JSON; ignoring",
-              }),
-            );
-          }
+          console.log(JSON.stringify({ ...payload, detached: true, pid: child.pid }));
         } else {
-          console.log(
-            JSON.stringify({
-              ok: true,
-              command: "expose",
-              detached: true,
-              pid: child.pid,
-            }),
-          );
+          if (stderrBuf.length > 0) process.stderr.write(stderrBuf);
+          console.log(`✓ Detached: PID ${child.pid}`);
+          console.log(`  ${(payload.url as string | undefined) ?? "(no url)"}`);
         }
-      } else {
-        // Re-emit child's human output if any.
-        process.stdout.write(stdoutBuf);
-        console.log(`(parent) detached pid=${child.pid}`);
+        resolve(0);
       }
-      resolve(0);
-    });
+    }, 50);
   }) as unknown as number;
 }
 
@@ -487,4 +454,14 @@ export async function run(argv: readonly string[]): Promise<number> {
 
   const isChild = process.env.CLOUD_EXPOSE_DETACH_CHILD === "1";
   return runExpose(args, isChild);
+}
+
+// Allow this module to be executed directly (`bun run src/cli/main.ts ...`)
+// as well as imported and driven by the `bin/cloud-expose` wrapper.
+const isDirectInvocation =
+  import.meta.main &&
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("src/cli/main.ts") || process.argv[1].endsWith("src/cli/main"));
+if (isDirectInvocation) {
+  process.exitCode = await run(process.argv.slice(2));
 }

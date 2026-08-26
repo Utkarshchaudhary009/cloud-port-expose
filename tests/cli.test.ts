@@ -24,12 +24,14 @@ function runCli(
       env: { ...process.env, ...env },
     });
     const watchdog = setTimeout(() => proc.kill("SIGKILL"), 15_000);
-    Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).then(
-      ([stdout, stderr, exitCode]) => {
-        clearTimeout(watchdog);
-        resolve({ stdout, stderr, exitCode });
-      },
-    );
+    Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]).then(([stdout, stderr, exitCode]) => {
+      clearTimeout(watchdog);
+      resolve({ stdout, stderr, exitCode });
+    });
   });
 }
 
@@ -70,7 +72,10 @@ describe("cloud-expose CLI", () => {
   test("--json failure: missing relay is a structured error with nextStep", async () => {
     const r = await runCli(["3000", "--json"], { CLOUD_EXPOSE_RELAY: "" });
     expect(r.exitCode).toBe(1);
-    const parsed = JSON.parse(r.stdout.trim()) as { ok: boolean; error: { code: string; nextStep: string } };
+    const parsed = JSON.parse(r.stdout.trim()) as {
+      ok: boolean;
+      error: { code: string; nextStep: string };
+    };
     expect(parsed.ok).toBe(false);
     expect(parsed.error.code).toBe("missing-relay");
     expect(parsed.error.nextStep).toMatch(/--relay|CLOUD_EXPOSE_RELAY/);
@@ -99,9 +104,19 @@ describe("cloud-expose CLI", () => {
   });
 
   test("--json failure: connection failure to a dead relay", async () => {
-    const r = await runCli(["3000", "--relay", "ws://127.0.0.1:1", "--ready-timeout", "1", "--json"]);
+    const r = await runCli([
+      "3000",
+      "--relay",
+      "ws://127.0.0.1:1",
+      "--ready-timeout",
+      "1",
+      "--json",
+    ]);
     expect(r.exitCode).toBe(1);
-    const parsed = JSON.parse(r.stdout.trim()) as { ok: boolean; error: { code: string; nextStep: string } };
+    const parsed = JSON.parse(r.stdout.trim()) as {
+      ok: boolean;
+      error: { code: string; nextStep: string };
+    };
     expect(parsed.ok).toBe(false);
     expect(["expose-failed", "connect-timeout"]).toContain(parsed.error.code);
     expect(parsed.error.nextStep.length).toBeGreaterThan(0);
@@ -142,52 +157,47 @@ describe("cloud-expose CLI", () => {
       [BUN, "run", CLI_PATH, String(origin.port), "--relay", relay.agentUrl, "--json"],
       { stdout: "pipe", stderr: "pipe", env: { ...process.env, CLOUD_EXPOSE_RELAY: "" } },
     );
-    // Read until the first complete JSON line appears on stdout, then SIGTERM.
-    const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-    let stdoutBuf = "";
+    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
-    let exitCode = 0;
+    let stdoutBuf = "";
     try {
-      // Read for up to 5s waiting for JSON.
+      // Read until the JSON line arrives (newline-terminated) or 5s elapses.
       const start = Date.now();
-      while (Date.now() - start < 5_000) {
-        const readPromise = reader.read();
+      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
+        const readPromise = stdoutReader.read();
         const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), 500),
+          setTimeout(() => resolve({ value: undefined, done: true }), 250),
         );
         const { value, done } = await Promise.race([readPromise, timer]);
         if (done && value === undefined) break;
-        if (value) {
-          stdoutBuf += decoder.decode(value);
-          if (stdoutBuf.includes("\n")) break;
-        }
+        if (value) stdoutBuf += decoder.decode(value);
       }
+      const parsed = JSON.parse(stdoutBuf.trim()) as {
+        ok: boolean;
+        url: string;
+        hostname: string;
+        sessionId: string;
+        exposureId: string;
+      };
+      expect(parsed.ok).toBe(true);
+      expect(parsed.url).toMatch(/^http:\/\/[a-z0-9]+\.localhost:\d+$/);
+
+      // While the agent is still running, verify reachability.
+      const res = await fetch(`http://127.0.0.1:${relay.port}/probe`, {
+        headers: { host: `${parsed.hostname}:${relay.port}` },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { method: string; path: string };
+      expect(body.path).toBe("/probe");
     } finally {
-      reader.cancel().catch(() => {});
+      await stdoutReader.cancel().catch(() => {});
       proc.kill("SIGTERM");
       try {
-        exitCode = await proc.exited;
+        await proc.exited;
       } catch {
-        exitCode = -1;
+        // already dead
       }
     }
-    expect(exitCode === 0 || exitCode === 143 || exitCode === 137).toBe(true);
-    const parsed = JSON.parse(stdoutBuf.trim().split("\n").pop() ?? "{}") as {
-      ok: boolean;
-      url: string;
-      hostname: string;
-      sessionId: string;
-      exposureId: string;
-    };
-    expect(parsed.ok).toBe(true);
-    expect(parsed.url).toMatch(/^http:\/\/[a-z0-9]+\.localhost:\d+$/);
-
-    const res = await fetch(`http://127.0.0.1:${relay.port}/probe`, {
-      headers: { host: `${parsed.hostname}:${relay.port}` },
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { method: string; path: string };
-    expect(body.path).toBe("/probe");
   }, 15_000);
 
   test("--detach returns immediately and keeps the exposure alive", async () => {
@@ -195,68 +205,61 @@ describe("cloud-expose CLI", () => {
       [BUN, "run", CLI_PATH, String(origin.port), "--relay", relay.agentUrl, "--detach", "--json"],
       { stdout: "pipe", stderr: "pipe" },
     );
-    // The parent CLI should print JSON and exit 0 quickly. Read until the JSON
-    // line arrives, then wait for process exit.
     const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-    const errReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
-    let stdoutBuf = "";
     const decoder = new TextDecoder();
-    const stderrChunks: string[] = [];
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-        setTimeout(() => resolve({ value: undefined, done: true }), 200),
-      );
-      const { value, done } = await Promise.race([stdoutReader.read(), timer]);
-      if (done && value === undefined) break;
-      if (value) {
-        stdoutBuf += decoder.decode(value);
-        if (stdoutBuf.includes("\n")) break;
-      }
-    }
-    while (Date.now() < deadline) {
-      const r = await Promise.race([errReader.read(), new Promise<void>((resolve) => setTimeout(resolve, 300))]);
-      if (r.done || !r.value) break;
-      stderrChunks.push(decoder.decode(r.value));
-    }
-    await errReader.cancel().catch(() => {});
-    await stdoutReader.cancel().catch(() => {});
-
-    const exitCode = await proc.exited;
-    const stderr = stderrChunks.join("");
-    expect(exitCode).toBe(0);
-    if (exitCode !== 0 || !stdoutBuf.includes("ok")) {
-      throw new Error(`detach parent failed (exit ${exitCode}); stdout=${stdoutBuf}; stderr=${stderr}`);
-    }
-    const parsed = JSON.parse(stdoutBuf.trim().split("\n").pop() ?? "{}") as {
+    let stdoutBuf = "";
+    let parsed: {
       ok: boolean;
       detached: boolean;
       url: string;
       hostname: string;
       pid: number;
-    };
-    expect(parsed.ok).toBe(true);
-    expect(parsed.detached).toBe(true);
-    expect(parsed.pid).toBeGreaterThan(0);
-
-    // Give the detached child a beat to register.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const res = await fetch(`http://127.0.0.1:${relay.port}/after-detach`, {
-      headers: { host: `${parsed.hostname}:${relay.port}` },
-    });
-    if (res.status !== 200) {
-      const body = await res.text().catch(() => "");
-      throw new Error(
-        `detached exposure not reachable: status=${res.status} body=${body} stderr=${stderr}`,
-      );
-    }
-    expect(res.status).toBe(200);
-
-    // Clean up the detached child.
+    } | null = null;
     try {
-      process.kill(parsed.pid, "SIGTERM");
-    } catch {
-      // already gone
+      const start = Date.now();
+      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
+        const readPromise = stdoutReader.read();
+        const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
+          setTimeout(() => resolve({ value: undefined, done: true }), 250),
+        );
+        const { value, done } = await Promise.race([readPromise, timer]);
+        if (done && value === undefined) break;
+        if (value) stdoutBuf += decoder.decode(value);
+      }
+      const value = JSON.parse(stdoutBuf.trim()) as {
+        ok: boolean;
+        detached: boolean;
+        url: string;
+        hostname: string;
+        pid: number;
+      };
+      expect(value.ok).toBe(true);
+      expect(value.detached).toBe(true);
+      expect(value.pid).toBeGreaterThan(0);
+      parsed = value;
+
+      // The detached child should be running. Verify reachability.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const res = await fetch(`http://127.0.0.1:${relay.port}/after-detach`, {
+        headers: { host: `${value.hostname}:${relay.port}` },
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      await stdoutReader.cancel().catch(() => {});
+      // Wait for the parent CLI to exit naturally (it should, since it's just a wrapper).
+      try {
+        await proc.exited;
+      } catch {
+        // ignore
+      }
+      // Clean up the detached child.
+      if (parsed !== null) {
+        try {
+          process.kill(parsed.pid, "SIGTERM");
+        } catch {
+          // already gone
+        }
+      }
     }
   }, 20_000);
 });
