@@ -5,6 +5,7 @@ interface ParsedArgs {
   relay?: string | undefined;
   token?: string | undefined;
   exposureId?: string | undefined;
+  exposureName?: string | undefined;
   mode: "open" | "session" | string | undefined;
   json: boolean;
   verbose: boolean;
@@ -20,6 +21,7 @@ Options:
   -r, --relay <url>   Relay websocket URL (or set CLOUD_EXPOSE_RELAY)
   -t, --token <tok>   Client credential (or set CLOUD_EXPOSE_TOKEN)
       --id <id>       Stable exposure id (default: random)
+  -n, --name <name>   Stable name -> https://<name>.<domain>
       --mode <mode>   Exposure access mode: open | session (default: open)
       --json          Emit exactly one JSON object on stdout (success or failure)
       --verbose       Structured debug logging on stderr
@@ -43,6 +45,11 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--id":
         parsed.exposureId = argv[i + 1];
+        i++;
+        break;
+      case "--name":
+      case "-n":
+        parsed.exposureName = argv[i + 1];
         i++;
         break;
       case "--mode":
@@ -98,6 +105,23 @@ async function run(): Promise<number> {
     return 1;
   }
 
+  if (
+    args.exposureName !== undefined &&
+    !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(args.exposureName)
+  ) {
+    console.error("✗ error: --name must be 3-63 chars: a-z0-9 with inner dashes");
+    console.error("  next step: retry with a name like 'my-app' or 'agy-usage'");
+    emitJson({
+      ok: false,
+      error: {
+        code: "invalid-name",
+        message: "--name must be 3-63 chars: a-z0-9 with inner dashes",
+        nextStep: "retry with a name like 'my-app' or 'agy-usage'",
+      },
+    });
+    return 1;
+  }
+
   if (args.mode !== undefined && args.mode !== "open" && args.mode !== "session") {
     console.error("✗ error: --mode must be 'open' or 'session'");
     console.error(
@@ -145,6 +169,7 @@ async function run(): Promise<number> {
     originPort: args.port,
     clientToken,
     exposureId: args.exposureId,
+    exposureName: args.exposureName,
     accessMode: args.mode,
     logLevel: args.verbose ? "debug" : "info",
   });
