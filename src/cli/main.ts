@@ -8,7 +8,6 @@ import { CLI_DESCRIPTION, CLI_NAME } from ".";
 
 const VERSION = "0.1.0";
 const DEFAULT_CONFIG_DIR = join(homedir(), ".cloud-expose");
-const DEFAULT_AUTH_PATH = join(DEFAULT_CONFIG_DIR, "auth.json");
 const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
 
 export const USAGE = `${CLI_NAME} — ${CLI_DESCRIPTION}
@@ -93,7 +92,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         parsed.mode = argv[++i];
         break;
       case "--ready-timeout": {
-        const raw = argv[++i];
+        let raw: string | undefined = argv[++i];
+        raw = raw?.startsWith("=") ? raw.slice(1) : raw;
+        if (raw === undefined || raw === "") raw = argv[++i];
         const seconds = raw === undefined ? NaN : Number.parseFloat(raw);
         if (Number.isFinite(seconds) && seconds > 0) {
           parsed.readyTimeoutMs = Math.floor(seconds * 1000);
@@ -129,12 +130,6 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
   return parsed;
-}
-
-interface JsonError {
-  code: string;
-  message: string;
-  nextStep: string;
 }
 
 function fail(args: ParsedArgs, code: string, message: string, nextStep: string): number {
@@ -260,7 +255,14 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
   }
 
   const persisted = readPersistedAuth();
-  const token = args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? persisted.clientToken;
+  // The persisted credential is only auto-loaded when CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1.
+  // Local-mode login (Phase 6) generates a token that is NOT registered in any
+  // relay's authStore, so silently reusing it against an authenticated relay
+  // would fail with `invalid-token`. Phase 10's control-plane login will flip
+  // the default. Until then, callers must explicitly opt in.
+  const autoLoad = process.env.CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN === "1";
+  const token =
+    args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? (autoLoad ? persisted.clientToken : undefined);
 
   if (args.detach && !isChild) {
     return spawnDetached(args, relay, token);
@@ -345,7 +347,8 @@ function spawnDetached(args: ParsedArgs, relay: string, token: string | undefine
     ...(token ? ["--token", token] : []),
     ...(args.json ? ["--json"] : []),
     ...(args.verbose ? ["--verbose"] : []),
-    `--ready-timeout=${args.readyTimeoutMs / 1000}`,
+    "--ready-timeout",
+    String(args.readyTimeoutMs / 1000),
   ];
   const child = spawn("bun", childArgs, {
     detached: true,
@@ -429,11 +432,30 @@ export async function run(argv: readonly string[]): Promise<number> {
   const args = parseArgs(argv);
 
   if (args.help) {
-    console.log(USAGE);
+    if (args.json) {
+      console.log(
+        JSON.stringify({
+          ok: true,
+          command: "help",
+          name: CLI_NAME,
+          version: VERSION,
+          description: CLI_DESCRIPTION,
+          usage: USAGE,
+        }),
+      );
+    } else {
+      console.log(USAGE);
+    }
     return 0;
   }
   if (args.version) {
-    console.log(`${CLI_NAME} ${VERSION}`);
+    if (args.json) {
+      console.log(
+        JSON.stringify({ ok: true, command: "version", name: CLI_NAME, version: VERSION }),
+      );
+    } else {
+      console.log(`${CLI_NAME} ${VERSION}`);
+    }
     return 0;
   }
 

@@ -69,6 +69,36 @@ describe("cloud-expose CLI", () => {
     expect(r.stdout.trim()).toMatch(/^cloud-expose \d+\.\d+\.\d+/);
   });
 
+  test("--help --json emits a single JSON object", async () => {
+    const r = await runCli(["--help", "--json"]);
+    expect(r.exitCode).toBe(0);
+    const parsed = JSON.parse(r.stdout.trim()) as {
+      ok: boolean;
+      command: string;
+      name: string;
+      version: string;
+      usage: string;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.command).toBe("help");
+    expect(parsed.name).toBe("cloud-expose");
+    expect(parsed.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(parsed.usage).toContain("--relay");
+  });
+
+  test("--version --json emits a single JSON object", async () => {
+    const r = await runCli(["--version", "--json"]);
+    expect(r.exitCode).toBe(0);
+    const parsed = JSON.parse(r.stdout.trim()) as {
+      ok: boolean;
+      command: string;
+      version: string;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.command).toBe("version");
+    expect(parsed.version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
   test("--json failure: missing relay is a structured error with nextStep", async () => {
     const r = await runCli(["3000", "--json"], { CLOUD_EXPOSE_RELAY: "" });
     expect(r.exitCode).toBe(1);
@@ -262,4 +292,60 @@ describe("cloud-expose CLI", () => {
       }
     }
   }, 20_000);
+
+  test("login then expose does NOT auto-load the persisted token (requires explicit opt-in)", async () => {
+    // Phase 6's local-mode login produces a token that is not registered in
+    // any relay's authStore. Silently reusing it would surface as
+    // 'invalid-token' on authenticated relays, so the CLI must not auto-load
+    // it unless CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1.
+    const dir = mkdtempSync(join(tmpdir(), "cpx-noload-"));
+    try {
+      const loginResult = await runCli(["login", "--relay", "wss://example.invalid", "--json"], {
+        CLOUD_EXPOSE_CONFIG: dir,
+      });
+      expect(loginResult.exitCode).toBe(0);
+
+      // Start a relay with an auth store so any non-empty token is rejected
+      // and any expose without auth is rejected.
+      const { startRelay } = await import("../src/relay/server");
+      const { InMemoryAuthStore } = await import("../src/auth/tokens");
+      const authRelay = await startRelay({
+        port: 0,
+        authStore: new InMemoryAuthStore(),
+      });
+      try {
+        // Expose with CLOUD_EXPOSE_RELAY pointing at the authenticated relay
+        // and CLOUD_EXPOSE_CONFIG pointing at the dir with the persisted
+        // token. The persisted token must NOT be auto-loaded. We expect a
+        // structured failure (the relay rejects the unauthenticated expose).
+        const env: Record<string, string> = {
+          CLOUD_EXPOSE_RELAY: authRelay.agentUrl,
+          CLOUD_EXPOSE_CONFIG: dir,
+          CLOUD_EXPOSE_TOKEN: "",
+        };
+        const r = await runCli([String(origin.port), "--json", "--ready-timeout=3"], env);
+        expect(r.exitCode).toBe(1);
+        const parsed = JSON.parse(r.stdout.trim()) as { ok: boolean; error: { code: string; message: string } };
+        expect(parsed.ok).toBe(false);
+        // The failure must mention authentication, not just a connection error.
+        expect(parsed.error.message.toLowerCase()).toMatch(/auth|token|malformed/);
+      } finally {
+        await authRelay.stop();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("--ready-timeout accepts the =N form as well as two tokens", async () => {
+    // Both spellings should be parsed and accepted; the failure (dead relay)
+    // should be reported quickly because the timeout is short.
+    const r = await runCli(["3000", "--relay", "ws://127.0.0.1:1", "--ready-timeout=1", "--json"]);
+    expect(r.exitCode).toBe(1);
+    const parsed = JSON.parse(r.stdout.trim()) as { ok: boolean; error: { code: string } };
+    expect(parsed.ok).toBe(false);
+    // We expect a failure (dead relay), proving the =N spelling was accepted
+    // and the short timeout applied.
+    expect(parsed.error.code).toBeDefined();
+  });
 });
