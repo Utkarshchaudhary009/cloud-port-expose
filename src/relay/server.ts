@@ -36,12 +36,19 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   const workspaceByName = new Map<string, string>();
   const nameTouchedAt = new Map<string, number>();
   const connections = new WeakMap<ServerWebSocket<unknown>, AgentConnection>();
+  let nameSweepTimer: ReturnType<typeof setInterval> | undefined;
   if (nameReservationTtlMs > 0) {
-    setInterval(
+    nameSweepTimer = setInterval(
       () => {
         const now = Date.now();
         for (const [name, touchedAt] of [...nameTouchedAt.entries()]) {
-          if (now - touchedAt > nameReservationTtlMs && !activeHostnames.has(`${name}.${domain}`)) {
+          const active = activeHostnames.has(`${name}.${domain}`);
+          if (active) {
+            // connected exposures keep their reservation alive indefinitely
+            nameTouchedAt.set(name, now);
+            continue;
+          }
+          if (now - touchedAt > nameReservationTtlMs) {
             workspaceByName.delete(name);
             nameTouchedAt.delete(name);
           }
@@ -135,7 +142,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   };
 
   const server = Bun.serve<PublicBridgeData>({
-    port: options.port ?? (tlsEnabled ? 443 : 0),
+    port: options.port ?? 0,
     hostname: options.hostname ?? "127.0.0.1",
     idleTimeout: 255,
     ...(options.tls !== undefined ? { tls: { cert: options.tls.cert, key: options.tls.key } } : {}),
@@ -281,7 +288,8 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
     },
   });
 
-  portSuffix = server.port === 80 ? "" : `:${server.port}`;
+  const defaultPort = tlsEnabled ? 443 : 80;
+  portSuffix = server.port === defaultPort ? "" : `:${server.port}`;
 
   const { port, hostname } = server;
   if (port === undefined || hostname === undefined) {
@@ -295,6 +303,9 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
     agentUrl: `${tlsEnabled ? "wss" : "ws"}://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}${agentPath}`,
     domain,
     stop: async () => {
+      if (nameSweepTimer !== undefined) {
+        clearInterval(nameSweepTimer);
+      }
       server.stop(true);
     },
   });

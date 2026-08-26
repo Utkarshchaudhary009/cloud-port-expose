@@ -193,7 +193,7 @@ Only authorized clients can create tunnels and only authorized browser sessions 
 - [x] Implement routing from hostname to exposure ID.
 - [ ] Provision the public exposure domain and a wildcard DNS record (`*.expose.<domain>` → relay IP). <!-- BLOCKED: no domain/infra available in this environment; see docs/deployment.md -->
 - [ ] Automate wildcard TLS issuance/renewal via ACME DNS-01 on the relay (a wildcard cert is required — Let's Encrypt allows only 50 new certs per registered domain per week, so per-subdomain certs exhaust quota). <!-- BLOCKED: needs live DNS API; local TLS termination verified with self-signed certs -->
-- [x] Terminate TLS on the relay's public listener (:443/:80) and route by SNI/Host header. (verified locally with self-signed certs; trusted-CA path pending infra)
+- [x] Terminate TLS on the relay's public listener (:443/:80) and route by SNI/Host header. (HTTPS verified locally with self-signed certs; dedicated plain-:80 redirect listener deferred to deployment rollout — docs/deployment.md)
 - [x] Keep the hostname associated with the logical exposure rather than the process ID.
 - [x] Define behavior when an exposure is offline.
 - [x] Add collision/slug validation.

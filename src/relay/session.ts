@@ -563,6 +563,18 @@ export class AgentConnection {
         });
         return;
       }
+      const targetHostname = `${requestedName}.${this.deps.nameSlugDomain}`;
+      for (const [existingId, access] of [...this.exposureAccess.entries()]) {
+        if (access.hostname === targetHostname && existingId !== msg.exposureId) {
+          this.send({
+            t: "error",
+            code: "session-conflict",
+            message: "name already bound to another exposure of this workspace",
+            context: { exposureId: msg.exposureId },
+          });
+          return;
+        }
+      }
     }
 
     let hostname =

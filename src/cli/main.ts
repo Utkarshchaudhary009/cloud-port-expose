@@ -105,6 +105,23 @@ async function run(): Promise<number> {
     return 1;
   }
 
+  if (
+    args.exposureName !== undefined &&
+    !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(args.exposureName)
+  ) {
+    console.error("✗ error: --name must be 3-63 chars: a-z0-9 with inner dashes");
+    console.error("  next step: retry with a name like 'my-app' or 'agy-usage'");
+    emitJson({
+      ok: false,
+      error: {
+        code: "invalid-name",
+        message: "--name must be 3-63 chars: a-z0-9 with inner dashes",
+        nextStep: "retry with a name like 'my-app' or 'agy-usage'",
+      },
+    });
+    return 1;
+  }
+
   if (args.mode !== undefined && args.mode !== "open" && args.mode !== "session") {
     console.error("✗ error: --mode must be 'open' or 'session'");
     console.error(

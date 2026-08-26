@@ -199,7 +199,18 @@ describe("tls termination (self-signed)", () => {
     });
   });
 
+  let previousTlsReject: string | undefined;
+
+  beforeAll(() => {
+    previousTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  });
+
   afterAll(async () => {
+    if (previousTlsReject === undefined) {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    } else {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsReject;
+    }
     await tlsRelay.stop();
     tlsOrigin.stop();
   });
