@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–3 done; next up: Phase 4.
+> **Status:** Implementation in progress — Phases 1–4 done; next up: Phase 5.
 >
 > **Source of truth:** This file is the authoritative implementation plan for `cloud-port-expose`. The repository, issue discussions, chat history, and agent memory must not override this file.
 
@@ -157,14 +157,14 @@ The tunnel transparently supports normal HTTP plus persistent WebSocket connecti
 
 ### Tasks
 
-- [ ] Define user/account identity model.
-- [ ] Define workspace/exposure identity model.
-- [ ] Generate cryptographically random client credentials.
-- [ ] Authenticate the outbound client to the relay.
-- [ ] Issue short-lived browser/session credentials.
-- [ ] Authorize browser access to a specific exposure.
-- [ ] Add token rotation/revocation.
-- [ ] Ensure secrets never appear in URLs or logs.
+- [x] Define user/account identity model.
+- [x] Define workspace/exposure identity model.
+- [x] Generate cryptographically random client credentials.
+- [x] Authenticate the outbound client to the relay.
+- [x] Issue short-lived browser/session credentials.
+- [x] Authorize browser access to a specific exposure.
+- [x] Add token rotation/revocation.
+- [x] Ensure secrets never appear in URLs or logs.
 
 ### Deliverable
 
@@ -172,12 +172,12 @@ Only authorized clients can create tunnels and only authorized browser sessions 
 
 ### Verification
 
-- [ ] Valid client credential connects successfully.
-- [ ] Invalid credential is rejected.
-- [ ] Revoked credential is rejected.
-- [ ] Browser session without permission cannot access another workspace.
-- [ ] Expired browser credential cannot be reused.
-- [ ] Logs contain no raw client secrets or session tokens.
+- [x] Valid client credential connects successfully.
+- [x] Invalid credential is rejected.
+- [x] Revoked credential is rejected.
+- [x] Browser session without permission cannot access another workspace.
+- [x] Expired browser credential cannot be reused.
+- [x] Logs contain no raw client secrets or session tokens.
 
 ---
 

@@ -3,6 +3,9 @@ import { ExposeAgent } from "../agent/client";
 interface ParsedArgs {
   port?: number;
   relay?: string | undefined;
+  token?: string | undefined;
+  exposureId?: string | undefined;
+  mode?: "open" | "session" | undefined;
   json: boolean;
   verbose: boolean;
   help: boolean;
@@ -15,6 +18,9 @@ Usage:
 
 Options:
   -r, --relay <url>   Relay websocket URL (or set CLOUD_EXPOSE_RELAY)
+  -t, --token <tok>   Client credential (or set CLOUD_EXPOSE_TOKEN)
+      --id <id>       Stable exposure id (default: random)
+      --mode <mode>   Exposure access mode: open | session (default: open)
       --json          Emit exactly one JSON object on stdout (success or failure)
       --verbose       Structured debug logging on stderr
   -h, --help          Show this help
@@ -30,6 +36,23 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         parsed.relay = argv[i + 1];
         i++;
         break;
+      case "--token":
+      case "-t":
+        parsed.token = argv[i + 1];
+        i++;
+        break;
+      case "--id":
+        parsed.exposureId = argv[i + 1];
+        i++;
+        break;
+      case "--mode": {
+        const value = argv[i + 1];
+        if (value === "open" || value === "session") {
+          parsed.mode = value;
+        }
+        i++;
+        break;
+      }
       case "--json":
         parsed.json = true;
         break;
@@ -97,9 +120,20 @@ async function run(): Promise<number> {
     return 1;
   }
 
+  const clientToken = args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? undefined;
+  if (clientToken === undefined && process.env.CLOUD_EXPOSE_REQUIRE_AUTH === "1") {
+    console.error("✗ error: this relay requires a client credential");
+    console.error(
+      "  next step: pass --token <cpx_...> or set CLOUD_EXPOSE_TOKEN with your workspace credential",
+    );
+    return 1;
+  }
   const agent = new ExposeAgent({
     relayUrl,
     originPort: args.port,
+    clientToken,
+    exposureId: args.exposureId,
+    accessMode: args.mode,
     logLevel: args.verbose ? "debug" : "info",
   });
   try {
