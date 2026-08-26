@@ -1,74 +1,131 @@
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ExposeAgent } from "../agent/client";
+import { generateClientToken } from "../auth/identity";
+import { CLI_DESCRIPTION, CLI_NAME } from ".";
 
-interface ParsedArgs {
-  port?: number;
-  relay?: string | undefined;
-  token?: string | undefined;
-  exposureId?: string | undefined;
-  exposureName?: string | undefined;
+process.stderr.write(`[cli] starting pid=${process.pid} argv=${JSON.stringify(process.argv)}\n`);
+
+const VERSION = "0.1.0";
+const DEFAULT_CONFIG_DIR = join(homedir(), ".cloud-expose");
+const DEFAULT_AUTH_PATH = join(DEFAULT_CONFIG_DIR, "auth.json");
+const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
+
+export const USAGE = `${CLI_NAME} — ${CLI_DESCRIPTION}
+
+Usage:
+  ${CLI_NAME} login [--relay <ws-url>] [--json]
+  ${CLI_NAME} <port> [--relay <ws-url>] [--name <name>] [--token <tok>] [--json] [--detach]
+  ${CLI_NAME} --version
+  ${CLI_NAME} --help
+
+Options:
+  -r, --relay <url>     Relay websocket URL (or CLOUD_EXPOSE_RELAY)
+  -t, --token <tok>     Client credential (or CLOUD_EXPOSE_TOKEN)
+  -n, --name <name>     Stable name → https://<name>.<domain>
+      --id <id>         Stable exposure id (default: random)
+      --mode <mode>     Exposure access mode: open | session (default: open)
+      --ready-timeout   Seconds to wait for relay to confirm routable (default: 10)
+      --detach          Spawn the agent in the background and return immediately
+      --json            Emit exactly one JSON object on stdout
+      --verbose         Structured debug logging on stderr
+  -h, --help            Show this help
+  -V, --version         Show version
+
+Environment:
+  CLOUD_EXPOSE_RELAY    Default relay WebSocket URL
+  CLOUD_EXPOSE_TOKEN    Default client credential
+  CLOUD_EXPOSE_CONFIG   Override config directory (default: ~/.cloud-expose)
+`;
+
+export interface ParsedArgs {
+  subcommand: string | null;
+  port: number | undefined;
+  relay: string | undefined;
+  token: string | undefined;
+  exposureId: string | undefined;
+  exposureName: string | undefined;
   mode: "open" | "session" | string | undefined;
   json: boolean;
   verbose: boolean;
   help: boolean;
+  version: boolean;
+  detach: boolean;
+  readyTimeoutMs: number;
 }
 
-const USAGE = `cloud-expose — expose a local port through a relay
-
-Usage:
-  cloud-expose <port> --relay <ws-url>
-
-Options:
-  -r, --relay <url>   Relay websocket URL (or set CLOUD_EXPOSE_RELAY)
-  -t, --token <tok>   Client credential (or set CLOUD_EXPOSE_TOKEN)
-      --id <id>       Stable exposure id (default: random)
-  -n, --name <name>   Stable name -> https://<name>.<domain>
-      --mode <mode>   Exposure access mode: open | session (default: open)
-      --json          Emit exactly one JSON object on stdout (success or failure)
-      --verbose       Structured debug logging on stderr
-  -h, --help          Show this help
-`;
-
-function parseArgs(argv: readonly string[]): ParsedArgs {
-  const parsed: ParsedArgs = { mode: undefined, json: false, verbose: false, help: false };
+export function parseArgs(argv: readonly string[]): ParsedArgs {
+  const parsed: ParsedArgs = {
+    subcommand: null,
+    port: undefined,
+    relay: undefined,
+    token: undefined,
+    exposureId: undefined,
+    exposureName: undefined,
+    mode: undefined,
+    json: false,
+    verbose: false,
+    help: false,
+    version: false,
+    detach: false,
+    readyTimeoutMs: DEFAULT_READINESS_TIMEOUT_MS,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (arg === undefined) continue;
     switch (arg) {
       case "--relay":
       case "-r":
-        parsed.relay = argv[i + 1];
-        i++;
+        parsed.relay = argv[++i];
         break;
       case "--token":
       case "-t":
-        parsed.token = argv[i + 1];
-        i++;
+        parsed.token = argv[++i];
         break;
       case "--id":
-        parsed.exposureId = argv[i + 1];
-        i++;
+        parsed.exposureId = argv[++i];
         break;
       case "--name":
       case "-n":
-        parsed.exposureName = argv[i + 1];
-        i++;
+        parsed.exposureName = argv[++i];
         break;
       case "--mode":
-        parsed.mode = argv[i + 1];
-        i++;
+        parsed.mode = argv[++i];
         break;
+      case "--ready-timeout": {
+        const raw = argv[++i];
+        const seconds = raw === undefined ? NaN : Number.parseFloat(raw);
+        if (Number.isFinite(seconds) && seconds > 0) {
+          parsed.readyTimeoutMs = Math.floor(seconds * 1000);
+        }
+        break;
+      }
       case "--json":
         parsed.json = true;
         break;
       case "--verbose":
         parsed.verbose = true;
         break;
+      case "--detach":
+        parsed.detach = true;
+        break;
       case "--help":
       case "-h":
         parsed.help = true;
         break;
+      case "--version":
+      case "-V":
+        parsed.version = true;
+        break;
       default: {
-        if (arg !== undefined && /^\d+$/.test(arg)) {
+        if (parsed.port === undefined && /^\d+$/.test(arg)) {
           parsed.port = Number.parseInt(arg, 10);
+        } else if (parsed.subcommand === null && !arg.startsWith("-")) {
+          parsed.subcommand = arg;
+        } else if (!arg.startsWith("-")) {
+          parsed.port = Number.NaN;
         }
       }
     }
@@ -76,131 +133,198 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   return parsed;
 }
 
-async function run(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
-  const emitJson = (payload: Record<string, unknown>): void => {
-    if (args.json) {
-      console.log(JSON.stringify(payload));
-    }
-  };
-  if (args.help) {
-    console.log(USAGE);
-    return 0;
-  }
+interface JsonError {
+  code: string;
+  message: string;
+  nextStep: string;
+}
 
-  if (args.port === undefined || args.port < 1 || args.port > 65535) {
-    console.error("✗ error: <port> must be an integer between 1 and 65535");
-    console.error(
-      "  next step: run `cloud-expose 3000 --relay ws://<relay-host>:<port>` with your local service's port",
+function fail(
+  args: ParsedArgs,
+  code: string,
+  message: string,
+  nextStep: string,
+): number {
+  console.error(`✗ ${message}`);
+  console.error(`  next step: ${nextStep}`);
+  if (args.json) {
+    console.log(JSON.stringify({ ok: false, error: { code, message, nextStep } }));
+  }
+  return 1;
+}
+
+function authPath(): string {
+  const dir = process.env.CLOUD_EXPOSE_CONFIG ?? DEFAULT_CONFIG_DIR;
+  return join(dir, "auth.json");
+}
+
+function readPersistedAuth(): { clientToken?: string; workspaceId?: string } {
+  try {
+    const path = authPath();
+    if (!existsSync(path)) return {};
+    return JSON.parse(readFileSync(path, "utf8")) as {
+      clientToken?: string;
+      workspaceId?: string;
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedAuth(data: { clientToken: string; workspaceId: string }): void {
+  const path = authPath();
+  mkdirSync(path.replace(/\/[^/]+$/, ""), { recursive: true });
+  writeFileSync(path, JSON.stringify(data, null, 2), { mode: 0o600 });
+}
+
+async function runLogin(args: ParsedArgs): Promise<number> {
+  const relay = args.relay ?? process.env.CLOUD_EXPOSE_RELAY;
+  if (!relay) {
+    return fail(
+      args,
+      "missing-relay",
+      "login needs a relay URL to obtain credentials from",
+      "pass --relay wss://<relay-host> or set CLOUD_EXPOSE_RELAY",
     );
-    emitJson({
-      ok: false,
-      error: {
-        code: "invalid-port",
-        message: "<port> must be an integer between 1 and 65535",
-        nextStep:
-          "run `cloud-expose 3000 --relay ws://<relay-host>:<port>` with your local service's port",
-      },
-    });
-    return 1;
+  }
+  const clientToken = generateClientToken();
+  const workspaceId = `wsp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+  // In a real deployment this would call the control plane to register the
+  // workspace and return a signed credential. Until the public control plane
+  // ships (Phase 10), the local flow stores a self-generated token. The user
+  // is explicitly told what will happen and how to override it.
+  writePersistedAuth({ clientToken, workspaceId });
+
+  if (args.json) {
+    console.log(
+      JSON.stringify({
+        ok: true,
+        command: "login",
+        workspaceId,
+        clientToken,
+        storedAt: authPath(),
+        note:
+          "Local-mode credential: usable for self-hosted relays that accept it. " +
+          "For hosted relays, set CLOUD_EXPOSE_TOKEN with the credential issued by the control plane.",
+      }),
+    );
+  } else {
+    console.log(`✓ Logged in (local-mode)`);
+    console.log(`  workspace: ${workspaceId}`);
+    console.log(`  token stored at: ${authPath()}`);
+    console.log(
+      `  note: local-mode credential works for self-hosted relays. For hosted relays, run with CLOUD_EXPOSE_TOKEN=<token> instead.`,
+    );
+  }
+  return 0;
+}
+
+async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
+  if (
+    args.port === undefined ||
+    !Number.isFinite(args.port) ||
+    args.port < 1 ||
+    args.port > 65535
+  ) {
+    return fail(
+      args,
+      "invalid-port",
+      "<port> must be an integer between 1 and 65535",
+      "run `cloud-expose 3000 --relay ws://<relay-host>:<port>` with your local service's port",
+    );
   }
 
   if (
     args.exposureName !== undefined &&
     !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(args.exposureName)
   ) {
-    console.error("✗ error: --name must be 3-63 chars: a-z0-9 with inner dashes");
-    console.error("  next step: retry with a name like 'my-app' or 'agy-usage'");
-    emitJson({
-      ok: false,
-      error: {
-        code: "invalid-name",
-        message: "--name must be 3-63 chars: a-z0-9 with inner dashes",
-        nextStep: "retry with a name like 'my-app' or 'agy-usage'",
-      },
-    });
-    return 1;
+    return fail(
+      args,
+      "invalid-name",
+      "--name must be 3-63 chars: a-z0-9 with inner dashes",
+      "retry with a name like 'my-app' or 'agy-usage'",
+    );
   }
 
   if (args.mode !== undefined && args.mode !== "open" && args.mode !== "session") {
-    console.error("✗ error: --mode must be 'open' or 'session'");
-    console.error(
-      "  next step: retry with --mode open (public) or --mode session (requires a browser token)",
+    return fail(
+      args,
+      "invalid-mode",
+      "--mode must be 'open' or 'session'",
+      "retry with --mode open (public) or --mode session (requires a browser token)",
     );
-    emitJson({
-      ok: false,
-      error: {
-        code: "invalid-mode",
-        message: "--mode must be 'open' or 'session'",
-        nextStep: "retry with --mode open (public) or --mode session (requires a browser token)",
-      },
-    });
-    return 1;
   }
 
-  const relayUrl = args.relay ?? process.env.CLOUD_EXPOSE_RELAY;
-  if (!relayUrl) {
-    console.error("✗ error: no relay URL given");
-    console.error(
-      "  next step: pass --relay ws://<relay-host>:<port> or set the CLOUD_EXPOSE_RELAY environment variable",
+  const relay = args.relay ?? process.env.CLOUD_EXPOSE_RELAY;
+  if (!relay) {
+    return fail(
+      args,
+      "missing-relay",
+      "no relay URL given",
+      "pass --relay ws://<relay-host>:<port> or set CLOUD_EXPOSE_RELAY",
     );
-    emitJson({
-      ok: false,
-      error: {
-        code: "missing-relay",
-        message: "no relay URL given",
-        nextStep:
-          "pass --relay ws://<relay-host>:<port> or set the CLOUD_EXPOSE_RELAY environment variable",
-      },
-    });
-    return 1;
   }
 
-  const clientToken = args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? undefined;
-  if (clientToken === undefined && process.env.CLOUD_EXPOSE_REQUIRE_AUTH === "1") {
-    console.error("✗ error: this relay requires a client credential");
-    console.error(
-      "  next step: pass --token <cpx_...> or set CLOUD_EXPOSE_TOKEN with your workspace credential",
-    );
-    return 1;
+  const persisted = readPersistedAuth();
+  const token = args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? persisted.clientToken;
+
+  if (args.detach && !isChild) {
+    return spawnDetached(args, relay, token);
   }
+
   const agent = new ExposeAgent({
-    relayUrl,
+    relayUrl: relay,
     originPort: args.port,
-    clientToken,
+    clientToken: token,
     exposureId: args.exposureId,
     exposureName: args.exposureName,
     accessMode: args.mode,
     logLevel: args.verbose ? "debug" : "info",
   });
+
+  let endpoint: { sessionId: string; exposureId: string; hostname: string; url: string };
   try {
     await agent.connect();
-    const endpoint = await agent.expose();
-    if (args.json) {
-      console.log(
-        JSON.stringify({
-          ok: true,
-          command: "expose",
-          port: args.port,
-          sessionId: endpoint.sessionId,
-          exposureId: endpoint.exposureId,
-          hostname: endpoint.hostname,
-          url: endpoint.url,
-        }),
-      );
+    endpoint = await withTimeout(
+      agent.expose(),
+      args.readyTimeoutMs,
+      `relay did not confirm exposure within ${args.readyTimeoutMs}ms`,
+    );
+  } catch (error) {
+    await agent.close().catch(() => {});
+    const message = (error as Error).message ?? "unknown failure";
+    const code = (error as Error & { code?: string }).code ?? "expose-failed";
+    return fail(
+      args,
+      code,
+      message,
+      "confirm the relay is running and reachable, then retry with --relay ws://<relay-host>:<port>",
+    );
+  }
+
+  if (args.json) {
+    console.log(
+      JSON.stringify({
+        ok: true,
+        command: "expose",
+        detached: args.detach && isChild,
+        port: args.port,
+        sessionId: endpoint.sessionId,
+        exposureId: endpoint.exposureId,
+        hostname: endpoint.hostname,
+        url: endpoint.url,
+        ...(args.detach && isChild ? { pid: process.pid } : {}),
+      }),
+    );
+  } else {
+    if (args.detach && isChild) {
+      console.log(`✓ Detached: PID ${process.pid}`);
+      console.log(`  ${endpoint.url}`);
     } else {
       console.log(`✓ Port ${args.port} exposed`);
       console.log(endpoint.url);
     }
-  } catch (error) {
-    await agent.close().catch(() => {});
-    const message = (error as Error).message ?? "unknown failure";
-    const nextStep =
-      "confirm the relay is running and reachable, then retry with --relay ws://<relay-host>:<port>";
-    console.error(`✗ ${message}`);
-    console.error(`  next step: ${nextStep}`);
-    emitJson({ ok: false, error: { code: "expose-failed", message, nextStep } });
-    return 1;
   }
 
   const shutdown = (): void => {
@@ -212,4 +336,155 @@ async function run(): Promise<number> {
   return 0;
 }
 
-process.exitCode = await run();
+function spawnDetached(args: ParsedArgs, relay: string, token: string | undefined): number {
+  const childArgs = [
+    "run",
+    "src/cli/main.ts",
+    String(args.port),
+    "--relay",
+    relay,
+    "--detach",
+    ...(args.exposureId ? ["--id", args.exposureId] : []),
+    ...(args.exposureName ? ["--name", args.exposureName] : []),
+    ...(args.mode ? ["--mode", args.mode] : []),
+    ...(token ? ["--token", token] : []),
+    ...(args.json ? ["--json"] : []),
+    ...(args.verbose ? ["--verbose"] : []),
+    `--ready-timeout=${args.readyTimeoutMs / 1000}`,
+  ];
+  const child = spawn("bun", childArgs, {
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, CLOUD_EXPOSE_DETACH_CHILD: "1" },
+  });
+  let stdoutBuf = "";
+  let stderrBuf = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdoutBuf += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderrBuf += chunk.toString("utf8");
+  });
+
+  return new Promise<number>((resolve) => {
+    const watchdog = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve(
+        fail(
+          args,
+          "detach-timeout",
+          `detached child did not print a result within ${args.readyTimeoutMs + 2_000}ms`,
+          "re-run without --detach to see the failure inline, or increase --ready-timeout",
+        ),
+      );
+    }, args.readyTimeoutMs + 2_000);
+
+    child.on("exit", (code) => {
+      clearTimeout(watchdog);
+      // Forward child's stderr to our stderr for the human-readable path.
+      if (stderrBuf.length > 0 && !args.json) {
+        process.stderr.write(stderrBuf);
+      }
+      if (code !== 0) {
+        // The child already printed either a JSON error (if --json) or a human error.
+        // If the child was running in non-json mode, mirror its failure to JSON for callers.
+        if (args.json) {
+          // We couldn't capture the child's structured error; emit a wrapper.
+          console.log(
+            JSON.stringify({
+              ok: false,
+              error: {
+                code: "detach-failed",
+                message: `detached child exited with code ${code}`,
+                nextStep: "re-run without --detach for the full error",
+              },
+            }),
+          );
+        }
+        resolve(1);
+        return;
+      }
+      // Child succeeded: forward its JSON if our mode is JSON, else just confirm.
+      if (args.json) {
+        const trimmed = stdoutBuf.trim();
+        if (trimmed.length > 0) {
+          // The child emitted its own JSON; rewrite the "ok" payload so the
+          // detached=true / pid fields are visible to the parent caller.
+          try {
+            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+            console.log(
+              JSON.stringify({ ...parsed, ok: true, detached: true, pid: child.pid }),
+            );
+          } catch {
+            console.log(
+              JSON.stringify({
+                ok: true,
+                command: "expose",
+                detached: true,
+                pid: child.pid,
+                note: "child output was not JSON; ignoring",
+              }),
+            );
+          }
+        } else {
+          console.log(
+            JSON.stringify({
+              ok: true,
+              command: "expose",
+              detached: true,
+              pid: child.pid,
+            }),
+          );
+        }
+      } else {
+        // Re-emit child's human output if any.
+        process.stdout.write(stdoutBuf);
+        console.log(`(parent) detached pid=${child.pid}`);
+      }
+      resolve(0);
+    });
+  }) as unknown as number;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+export async function run(argv: readonly string[]): Promise<number> {
+  const args = parseArgs(argv);
+
+  if (args.help) {
+    console.log(USAGE);
+    return 0;
+  }
+  if (args.version) {
+    console.log(`${CLI_NAME} ${VERSION}`);
+    return 0;
+  }
+
+  if (args.subcommand === "login") {
+    return runLogin(args);
+  }
+
+  if (args.subcommand !== null && args.subcommand !== undefined) {
+    // First non-flag arg wasn't a digit (port) and isn't a known subcommand.
+    // The most common cause is a typo or a forgotten <port>.
+    return fail(
+      args,
+      "invalid-port",
+      `<port> must be an integer between 1 and 65535 (got "${args.subcommand}")`,
+      `run \`${CLI_NAME} 3000\` with your local service's port`,
+    );
+  }
+
+  const isChild = process.env.CLOUD_EXPOSE_DETACH_CHILD === "1";
+  return runExpose(args, isChild);
+}
