@@ -10,6 +10,7 @@ import {
 } from "./identity";
 
 export const DEFAULT_BROWSER_SESSION_TTL_MS = 15 * 60 * 1000;
+export const MAX_BROWSER_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface AuthStore {
   createWorkspace(userId?: string): { workspaceId: WorkspaceId; clientToken: string };
@@ -66,12 +67,16 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   createBrowserSession(exposureId: ExposureId, workspaceId: WorkspaceId, ttlMs?: number): string {
+    const resolvedTtl =
+      ttlMs !== undefined && Number.isFinite(ttlMs) && ttlMs > 0
+        ? Math.min(ttlMs, MAX_BROWSER_SESSION_TTL_MS)
+        : DEFAULT_BROWSER_SESSION_TTL_MS;
     const browserToken = generateBrowserToken();
     this.sessions.set(hashToken(browserToken), {
       tokenHash: hashToken(browserToken),
       exposureId,
       workspaceId,
-      expiresAt: Date.now() + (ttlMs ?? DEFAULT_BROWSER_SESSION_TTL_MS),
+      expiresAt: Date.now() + resolvedTtl,
     });
     return browserToken;
   }

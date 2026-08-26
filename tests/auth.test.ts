@@ -173,8 +173,11 @@ describe("browser session authorization", () => {
   });
 
   test("expired or foreign session tokens are rejected", async () => {
-    const shortLived = authStore.createBrowserSession("__none__", "__ws__", -1);
+    const shortLived = authStore.createBrowserSession("__none__", "__ws__", 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(authStore.verifyBrowserSession(shortLived, "__none__")).toBe(false);
+    expect(authStore.createBrowserSession("__n2__", "__ws__", Number.NaN)).toBeTruthy();
+    expect(authStore.createBrowserSession("__n3__", "__ws__", -5000)).toBeTruthy();
 
     const otherToken = authStore.createBrowserSession("other-exposure-id", "__ws2__");
     expect(authStore.verifyBrowserSession(otherToken, "target-exposure")).toBe(false);

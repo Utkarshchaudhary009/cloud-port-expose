@@ -5,7 +5,7 @@ interface ParsedArgs {
   relay?: string | undefined;
   token?: string | undefined;
   exposureId?: string | undefined;
-  mode?: "open" | "session" | undefined;
+  mode: "open" | "session" | string | undefined;
   json: boolean;
   verbose: boolean;
   help: boolean;
@@ -27,7 +27,7 @@ Options:
 `;
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
-  const parsed: ParsedArgs = { json: false, verbose: false, help: false };
+  const parsed: ParsedArgs = { mode: undefined, json: false, verbose: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
@@ -45,14 +45,10 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         parsed.exposureId = argv[i + 1];
         i++;
         break;
-      case "--mode": {
-        const value = argv[i + 1];
-        if (value === "open" || value === "session") {
-          parsed.mode = value;
-        }
+      case "--mode":
+        parsed.mode = argv[i + 1];
         i++;
         break;
-      }
       case "--json":
         parsed.json = true;
         break;
@@ -97,6 +93,22 @@ async function run(): Promise<number> {
         message: "<port> must be an integer between 1 and 65535",
         nextStep:
           "run `cloud-expose 3000 --relay ws://<relay-host>:<port>` with your local service's port",
+      },
+    });
+    return 1;
+  }
+
+  if (args.mode !== undefined && args.mode !== "open" && args.mode !== "session") {
+    console.error("✗ error: --mode must be 'open' or 'session'");
+    console.error(
+      "  next step: retry with --mode open (public) or --mode session (requires a browser token)",
+    );
+    emitJson({
+      ok: false,
+      error: {
+        code: "invalid-mode",
+        message: "--mode must be 'open' or 'session'",
+        nextStep: "retry with --mode open (public) or --mode session (requires a browser token)",
       },
     });
     return 1;

@@ -509,6 +509,15 @@ export class AgentConnection {
       });
       return;
     }
+    if (this.deps.isExposureOwnedByOtherWorkspace(msg.exposureId, this.workspaceId)) {
+      this.send({
+        t: "error",
+        code: "session-conflict",
+        message: "exposure belongs to another workspace",
+        context: { exposureId: msg.exposureId },
+      });
+      return;
+    }
 
     const owned = this.exposures.get(msg.exposureId);
     if (owned) {

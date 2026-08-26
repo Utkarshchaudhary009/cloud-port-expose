@@ -74,6 +74,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
     },
     forgetExposureHostname: (exposureId: string): void => {
       hostnameByExposure.delete(exposureId);
+      workspaceByExposure.delete(exposureId);
     },
     releaseAll: (owner: AgentConnection): void => {
       for (const [hostname, binding] of [...activeHostnames.entries()]) {
@@ -130,7 +131,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
             headers: { "content-type": "application/json" },
           });
         }
-        let body: { exposureId?: string; ttlMs?: number };
+        let body: { exposureId?: string; ttlMs?: number } | null;
         try {
           body = (await request.json()) as { exposureId?: string; ttlMs?: number };
         } catch {
@@ -174,9 +175,17 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
           const cookieHeader = request.headers.get("cookie") ?? "";
           const tokenMatch = /(?:^|;\s*)cpx_session=([^;]+)/.exec(cookieHeader);
           const sessionToken = tokenMatch?.[1];
-          const authorized =
-            sessionToken !== undefined &&
-            authStore.verifyBrowserSession(decodeURIComponent(sessionToken), access.exposureId);
+          let authorized = false;
+          if (sessionToken !== undefined) {
+            try {
+              authorized = authStore.verifyBrowserSession(
+                decodeURIComponent(sessionToken),
+                access.exposureId,
+              );
+            } catch {
+              authorized = false;
+            }
+          }
           if (!authorized) {
             return new Response(JSON.stringify({ error: "unauthorized" }), {
               status: 401,
