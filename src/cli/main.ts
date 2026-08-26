@@ -5,6 +5,7 @@ interface ParsedArgs {
   relay?: string | undefined;
   token?: string | undefined;
   exposureId?: string | undefined;
+  exposureName?: string | undefined;
   mode: "open" | "session" | string | undefined;
   json: boolean;
   verbose: boolean;
@@ -20,6 +21,7 @@ Options:
   -r, --relay <url>   Relay websocket URL (or set CLOUD_EXPOSE_RELAY)
   -t, --token <tok>   Client credential (or set CLOUD_EXPOSE_TOKEN)
       --id <id>       Stable exposure id (default: random)
+  -n, --name <name>   Stable name -> https://<name>.<domain>
       --mode <mode>   Exposure access mode: open | session (default: open)
       --json          Emit exactly one JSON object on stdout (success or failure)
       --verbose       Structured debug logging on stderr
@@ -43,6 +45,11 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--id":
         parsed.exposureId = argv[i + 1];
+        i++;
+        break;
+      case "--name":
+      case "-n":
+        parsed.exposureName = argv[i + 1];
         i++;
         break;
       case "--mode":
@@ -145,6 +152,7 @@ async function run(): Promise<number> {
     originPort: args.port,
     clientToken,
     exposureId: args.exposureId,
+    exposureName: args.exposureName,
     accessMode: args.mode,
     logLevel: args.verbose ? "debug" : "info",
   });

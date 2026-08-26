@@ -5,9 +5,10 @@ Securely expose local ports over the internet through an outbound tunnel.
 ## Status
 
 Early development — the implementation plan in [`docs/plan.md`](docs/plan.md) is the source of
-truth. Phases 1–4 are merged: outbound tunnels carry HTTP **and** WebSocket traffic with
-heartbeat keepalive, plus workspace-scoped client credentials and optional session-gated
-exposures. TLS termination and stable named domains arrive in later phases.
+truth. Phases 1–5 are merged: outbound tunnels carry HTTP **and** WebSocket traffic with
+heartbeat keepalive; workspaces get authenticated client credentials, session-gated exposures,
+TLS termination, and stable named hostnames (`--name`). Public wildcard DNS + ACME remain
+(see docs/deployment.md).
 
 ## Quickstart (dev, no auth/TLS yet)
 

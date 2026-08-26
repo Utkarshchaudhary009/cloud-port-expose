@@ -1,6 +1,8 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–4 done; next up: Phase 5.
+> **Status:** Implementation in progress — Phases 1–4 done; Phase 5 done except public-infra items (wildcard DNS + trusted TLS, blocked — see docs/deployment.md). Next up: Phase 6.
+>
+> **Amendment log:** 2026-08-26 — studied `mxschmitt/action-tmate`; hardened Phases 6 and 9, added Phase 11 (Release Engineering) and a non-committed Backlog section.
 >
 > **Source of truth:** This file is the authoritative implementation plan for `cloud-port-expose`. The repository, issue discussions, chat history, and agent memory must not override this file.
 
@@ -187,15 +189,15 @@ Only authorized clients can create tunnels and only authorized browser sessions 
 
 ### Tasks
 
-- [ ] Add exposure names/slugs.
-- [ ] Implement routing from hostname to exposure ID.
-- [ ] Provision the public exposure domain and a wildcard DNS record (`*.expose.<domain>` → relay IP).
-- [ ] Automate wildcard TLS issuance/renewal via ACME DNS-01 on the relay (a wildcard cert is required — Let's Encrypt allows only 50 new certs per registered domain per week, so per-subdomain certs exhaust quota).
-- [ ] Terminate TLS on the relay's public listener (:443/:80) and route by SNI/Host header.
-- [ ] Keep the hostname associated with the logical exposure rather than the process ID.
-- [ ] Define behavior when an exposure is offline.
-- [ ] Add collision/slug validation.
-- [ ] Add expiration/deletion semantics for abandoned exposures.
+- [x] Add exposure names/slugs.
+- [x] Implement routing from hostname to exposure ID.
+- [ ] Provision the public exposure domain and a wildcard DNS record (`*.expose.<domain>` → relay IP). <!-- BLOCKED: no domain/infra available in this environment; see docs/deployment.md -->
+- [ ] Automate wildcard TLS issuance/renewal via ACME DNS-01 on the relay (a wildcard cert is required — Let's Encrypt allows only 50 new certs per registered domain per week, so per-subdomain certs exhaust quota). <!-- BLOCKED: needs live DNS API; local TLS termination verified with self-signed certs -->
+- [x] Terminate TLS on the relay's public listener (:443/:80) and route by SNI/Host header. (verified locally with self-signed certs; trusted-CA path pending infra)
+- [x] Keep the hostname associated with the logical exposure rather than the process ID.
+- [x] Define behavior when an exposure is offline.
+- [x] Add collision/slug validation.
+- [x] Add expiration/deletion semantics for abandoned exposures.
 
 ### Deliverable
 
@@ -213,12 +215,12 @@ localhost:3773
 
 ### Verification
 
-- [ ] Named exposure can be created.
-- [ ] A real browser request to `https://<name>.<domain>` reaches the relay over trusted TLS.
-- [ ] Stable hostname routes to the correct connected client.
-- [ ] Reconnecting a new client preserves the same hostname.
-- [ ] Another user cannot claim an existing protected name.
-- [ ] Offline exposure returns a controlled error page/status.
+- [x] Named exposure can be created.
+- [ ] A real browser request to `https://<name>.<domain>` reaches the relay over trusted TLS. <!-- BLOCKED: verified with self-signed TLS locally (tests/named.test.ts); trusted CA requires the domain from above -->
+- [x] Stable hostname routes to the correct connected client.
+- [x] Reconnecting a new client preserves the same hostname.
+- [x] Another user cannot claim an existing protected name.
+- [x] Offline exposure returns a controlled error page/status.
 
 ---
 
@@ -233,12 +235,14 @@ localhost:3773
 - [ ] Implement `cloud-expose` CLI.
 - [ ] Implement `cloud-expose login`.
 - [ ] Implement `cloud-expose <port>`.
+- [ ] Readiness-gate the success output: emit the public URL only after the relay confirms the exposure is actually routable, with a configurable timeout (pattern borrowed from tmate's `wait tmate-ready`).
 - [ ] Implement named exposure flags.
 - [ ] Implement environment-variable configuration for non-interactive environments.
 - [ ] Provide concise success/error output.
 - [ ] AI-agent-friendly errors: every error exit names the failing check and prints one actionable next step (exact command/env var to fix or proceed).
 - [ ] Machine-readable output: every command accepts `--json`, emitting exactly one stable-schema JSON object on stdout (success or failure); human-readable text remains the default mode.
 - [ ] Add `--help`, `--version`, and diagnostics.
+- [ ] Implement detached mode (`--detach`): start the exposure in the background, print the endpoint, and return control to the caller while the tunnel keeps running (for CI and scripted use).
 
 ### Deliverable
 
@@ -254,6 +258,8 @@ A user can expose a port with one command and receive the endpoint immediately. 
 - [ ] `cloud-expose 3773 --name example` produces the expected named endpoint.
 - [ ] Every command's `--json` output parses as a single JSON object on both success and failure paths.
 - [ ] Each failure path's output contains an actionable next-step suggestion.
+- [ ] Success output is withheld until the relay confirms the exposure is routable.
+- [ ] Detached mode returns control immediately while the exposure remains reachable.
 
 ---
 
@@ -331,6 +337,7 @@ A T3 server running inside a remote Docker environment can be accessed from the 
 - [ ] Add origin/access-control policy for browser sessions.
 - [ ] Add audit logging without storing secrets.
 - [ ] Add graceful shutdown and drain behavior.
+- [ ] Support optional certificate/SPKI pinning for the agent ↔ relay connection (self-hosted relays with private CAs; pattern borrowed from tmate's server fingerprint inputs).
 - [ ] Add failure recovery tests.
 
 ### Verification
@@ -341,6 +348,7 @@ A T3 server running inside a remote Docker environment can be accessed from the 
 - [ ] Relay restart behavior is documented and tested.
 - [ ] No cross-workspace traffic is possible in tests.
 - [ ] Security review finds no known credential leakage path.
+- [ ] An agent configured with a pin refuses a relay whose certificate does not match.
 
 ---
 
@@ -389,6 +397,30 @@ Open stable T3 endpoint
 
 ---
 
+# Phase 11 — Release Engineering & Distribution
+
+**Goal:** Ship the compiled agent/CLI as verifiable, easy-to-install artifacts (discipline borrowed from tmate's pinned per-arch static-binary releases).
+
+### Tasks
+
+- [ ] Publish cross-compiled release binaries per supported target (linux-x64/arm64 glibc+musl, macOS arm64/x64, Windows x64).
+- [ ] Stamp builds so `--version` reports the release tag and commit.
+- [ ] Provide an install script that detects OS/arch and installs the matching artifact.
+- [ ] Smoke-test every published artifact in CI before publication (binary starts, `--version`, `--help`).
+- [ ] Document agent upgrade/rollback.
+
+### Deliverable
+
+A user on any supported platform can install the agent with one command and verify the installed version.
+
+### Verification
+
+- [ ] Install script succeeds on linux-x64 and at least one additional platform.
+- [ ] Installed binary passes `--version` and `--help`.
+- [ ] Every release artifact was smoke-tested in CI before publication.
+
+---
+
 # Definition of Done
 
 The project is considered production-ready for the original goal only when:
@@ -402,3 +434,16 @@ The project is considered production-ready for the original goal only when:
 - [ ] T3 integration is verified.
 - [ ] Security and abuse controls are documented and tested.
 - [ ] The Cloud Development OS workflow is reproducible end-to-end.
+
+---
+
+# Backlog — Adopted Ideas & Future Directions (not committed)
+
+Collected while studying `mxschmitt/action-tmate` (2026-08). Nothing here gates the Definition of Done. Items graduate only through a deliberate amendment that turns them into a phase.
+
+- **Official GitHub Action wrapper** (`cloud-port-expose-action`): expose a port from any workflow step and consume the resulting URL via step outputs, mirroring action-tmate's detached-mode `ssh-command`/`web-url` outputs and `::notice::` surfacing.
+- **GitHub identity binding for CI**: authorize an exposure to the triggering actor's GitHub identity via OIDC — no stored secrets in CI. Generalizes tmate's `limit-access-to-actor`, but keeps our fail-loud rule instead of its unprotected fallback.
+- **Hosted landing page per exposure**: present short-lived browser credentials (already issued in Phase 4) on a relay-hosted quick-access page — the analog of tmate's `#{tmate_web}` shell link.
+- **Per-exposure observability endpoint**: connected-client count, bytes transferred, uptime (mirrors tmate's `#{tmate_num_clients}` introspection that powers its "waiting for client" vs "waiting for session end" logs).
+- **Local-network fast path**: when browser and origin share a LAN, advertise a direct connection to cut relay round-trips (tmate does LAN discovery for SSH).
+- **Multi-region relay selection**: only after the single-relay design has proven itself in production use (YAGNI §12).

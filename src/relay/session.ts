@@ -18,7 +18,7 @@ import { filterRequestHeaders, filterResponseHeaders, headersToEntries } from ".
 import { isValidExposureId, newId, randomSlug } from "../util/ids";
 import type { Logger, LogLevel } from "../util/logger";
 
-const _SLUG_CHARSET = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 
 export interface RelayOptions {
   port?: number;
@@ -28,6 +28,8 @@ export interface RelayOptions {
   requestTimeoutMs?: number;
   heartbeatIntervalMs?: number;
   authStore?: AuthStore | undefined;
+  tls?: { cert: string; key: string } | undefined;
+  nameReservationTtlMs?: number;
   logLevel?: LogLevel;
 }
 
@@ -80,6 +82,10 @@ export interface RelayDeps {
     exposureId: string,
     selfWorkspaceId: string | undefined,
   ) => boolean;
+  nameSlugDomain: string;
+  lookupNameOwner: (name: string) => string | undefined;
+  rememberNameOwnership: (name: string, workspaceId: string) => void;
+  forgetNameOwnership: (name: string) => void;
   log: Logger;
   buildPublicUrl: (hostname: string) => string;
   registerExposure: (hostname: string, owner: AgentConnection) => boolean;
@@ -102,6 +108,7 @@ export class AgentConnection {
   private handshaked = false;
   private workspaceId: WorkspaceId | undefined;
   readonly exposureAccess = new Map<string, { hostname: string; mode: "open" | "session" }>();
+  private readonly namesByExposure = new Map<string, string>();
   private readonly publicSockets = new Map<
     number,
     { info: BridgeInfo; socket?: ServerWebSocket<unknown> | undefined }
@@ -535,8 +542,44 @@ export class AgentConnection {
       return;
     }
 
-    let hostname = this.deps.lookupExposureHostname(msg.exposureId);
+    const requestedName = msg.name;
+    if (requestedName !== undefined && !SLUG_PATTERN.test(requestedName)) {
+      this.send({
+        t: "error",
+        code: "bad-request",
+        message: "names must be 3-63 chars of a-z0-9 with inner dashes only",
+        context: { exposureId: msg.exposureId },
+      });
+      return;
+    }
+    if (requestedName !== undefined) {
+      const nameOwner = this.deps.lookupNameOwner(requestedName);
+      if (nameOwner !== undefined && nameOwner !== (this.workspaceId ?? "local")) {
+        this.send({
+          t: "error",
+          code: "session-conflict",
+          message: "that name belongs to another workspace",
+          context: { exposureId: msg.exposureId },
+        });
+        return;
+      }
+    }
+
+    let hostname =
+      requestedName !== undefined
+        ? `${requestedName}.${this.deps.nameSlugDomain}`
+        : this.deps.lookupExposureHostname(msg.exposureId);
     if (!hostname || !this.deps.registerExposure(hostname, this)) {
+      if (requestedName !== undefined) {
+        // name currently bound to another live session
+        this.send({
+          t: "error",
+          code: "session-conflict",
+          message: "name is already bound to a live session",
+          context: { exposureId: msg.exposureId },
+        });
+        return;
+      }
       do {
         hostname = `${randomSlug()}.${this.deps.domain}`;
       } while (!this.deps.registerExposure(hostname, this));
@@ -546,6 +589,10 @@ export class AgentConnection {
       hostname,
       mode: msg.mode ?? "open",
     });
+    if (requestedName !== undefined) {
+      this.namesByExposure.set(msg.exposureId, requestedName);
+      this.deps.rememberNameOwnership(requestedName, this.workspaceId ?? "local");
+    }
     this.deps.rememberExposureOwnership(msg.exposureId, this.workspaceId ?? "local");
     this.deps.rememberExposureHostname(msg.exposureId, hostname);
     this.log.info("exposure registered", { exposureId: msg.exposureId, hostname });
@@ -562,6 +609,11 @@ export class AgentConnection {
     if (owned) {
       this.deps.unregisterExposure(owned.hostname, this);
       this.deps.forgetExposureHostname(exposureId);
+      const reservedName = this.namesByExposure.get(exposureId);
+      if (reservedName !== undefined) {
+        this.deps.forgetNameOwnership(reservedName);
+        this.namesByExposure.delete(exposureId);
+      }
       this.exposures.delete(exposureId);
       this.exposureAccess.delete(exposureId);
       this.log.info("exposure released", { exposureId });

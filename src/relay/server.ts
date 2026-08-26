@@ -26,12 +26,31 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const authStore = options.authStore;
+  const tlsEnabled = options.tls !== undefined;
+  const nameReservationTtlMs = options.nameReservationTtlMs ?? 24 * 60 * 60 * 1000;
   const log: Logger = createLogger({ subsystem: "relay", level: options.logLevel });
 
   const activeHostnames = new Map<string, ExposureBinding>();
   const hostnameByExposure = new Map<string, string>();
   const workspaceByExposure = new Map<string, string>();
+  const workspaceByName = new Map<string, string>();
+  const nameTouchedAt = new Map<string, number>();
   const connections = new WeakMap<ServerWebSocket<unknown>, AgentConnection>();
+  if (nameReservationTtlMs > 0) {
+    setInterval(
+      () => {
+        const now = Date.now();
+        for (const [name, touchedAt] of [...nameTouchedAt.entries()]) {
+          if (now - touchedAt > nameReservationTtlMs && !activeHostnames.has(`${name}.${domain}`)) {
+            workspaceByName.delete(name);
+            nameTouchedAt.delete(name);
+          }
+        }
+      },
+      Math.min(Math.max(nameReservationTtlMs / 4, 50), 60_000),
+    );
+  }
+
   let portSuffix = "";
 
   const deps = {
@@ -39,8 +58,19 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
     requestTimeoutMs,
     heartbeatIntervalMs,
     authStore,
+    nameSlugDomain: domain,
+    lookupNameOwner: (name: string): string | undefined => workspaceByName.get(name),
+    rememberNameOwnership: (name: string, workspaceId: string): void => {
+      workspaceByName.set(name, workspaceId);
+      nameTouchedAt.set(name, Date.now());
+    },
+    forgetNameOwnership: (name: string): void => {
+      workspaceByName.delete(name);
+      nameTouchedAt.delete(name);
+    },
     log,
-    buildPublicUrl: (hostname: string) => `http://${hostname}${portSuffix}`,
+    buildPublicUrl: (hostname: string) =>
+      `${tlsEnabled ? "https" : "http"}://${hostname}${portSuffix}`,
     registerExposure: (hostname: string, owner: AgentConnection): boolean => {
       const existing = activeHostnames.get(hostname);
       if (existing && existing.owner !== owner) {
@@ -105,9 +135,10 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   };
 
   const server = Bun.serve<PublicBridgeData>({
-    port: options.port ?? 0,
+    port: options.port ?? (tlsEnabled ? 443 : 0),
     hostname: options.hostname ?? "127.0.0.1",
     idleTimeout: 255,
+    ...(options.tls !== undefined ? { tls: { cert: options.tls.cert, key: options.tls.key } } : {}),
     async fetch(request, server): Promise<Response | undefined> {
       const url = new URL(request.url);
       const isUpgrade = request.headers.get("upgrade")?.toLowerCase() === "websocket";
@@ -261,7 +292,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   return Promise.resolve({
     port,
     hostname,
-    agentUrl: `ws://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}${agentPath}`,
+    agentUrl: `${tlsEnabled ? "wss" : "ws"}://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}${agentPath}`,
     domain,
     stop: async () => {
       server.stop(true);

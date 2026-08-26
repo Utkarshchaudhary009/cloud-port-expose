@@ -78,6 +78,12 @@ Exposures are created with access mode `open` (default) or `session`:
   |<---------- exposed {exposureId, hostname, url}
 ```
 
+- A supplied `name` reserves the stable hostname `<name>.<domain>` (slug rules: 3–63 chars,
+  `a-z0-9` with inner dashes). Names are workspace-scoped: another workspace claiming a taken
+  name gets `session-conflict`; the same workspace reconnecting re-binds to the same hostname.
+- Name reservations outlive their session but expire after an operator-configured idle period
+  (default 24 h), after which any workspace may claim them.
+
 - A session may hold multiple exposures at once.
 - Relay rejects with `error`: `session-conflict` (id/name already bound elsewhere),
   `unknown-exposure` (unexpose of unknown id), `bad-request` (invalid slug).

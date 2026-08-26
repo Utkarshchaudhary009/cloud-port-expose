@@ -23,6 +23,8 @@ export interface AgentOptions {
   originPort: number;
   originHostname?: string;
   exposureId?: string | undefined;
+  /** Human-readable stable name -> <name>.<domain> hostname (requires relay-side support). */
+  exposureName?: string | undefined;
   /** Client credential sent in the auth frame after hello (required when relay auth is on). */
   clientToken?: string | undefined;
   /** Access mode for the exposure: open to anyone, or gated by a browser session token. */
@@ -86,6 +88,7 @@ function _deferred<T>(): Deferred<T> {
 
 export class ExposeAgent {
   readonly exposureId: string;
+  private readonly exposureName: string | undefined;
   private readonly clientToken: string | undefined;
   private readonly accessMode: "open" | "session";
   private readonly relayUrl: string;
@@ -116,6 +119,7 @@ export class ExposeAgent {
     this.relayUrl = options.relayUrl;
     this.clientToken = options.clientToken;
     this.accessMode = options.accessMode ?? "open";
+    this.exposureName = options.exposureName;
     this.exposureId = options.exposureId ?? newId("exp");
     this.originPort = options.originPort;
     this.originHostname = options.originHostname ?? DEFAULT_ORIGIN_HOSTNAME;
@@ -240,9 +244,11 @@ export class ExposeAgent {
         },
         reject,
       };
+      const wantsName = this.exposureName !== undefined;
       this.send({
         t: "expose",
         exposureId: this.exposureId,
+        ...(wantsName ? { name: this.exposureName } : {}),
         ...(this.accessMode === "session" ? { mode: this.accessMode } : {}),
       });
     });
