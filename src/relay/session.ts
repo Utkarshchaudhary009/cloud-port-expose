@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun";
+import type { AuthStore, WorkspaceId } from "../auth";
 import {
   type AbortMsg,
   decodeMessage,
@@ -26,6 +27,7 @@ export interface RelayOptions {
   agentPath?: string;
   requestTimeoutMs?: number;
   heartbeatIntervalMs?: number;
+  authStore?: AuthStore | undefined;
   logLevel?: LogLevel;
 }
 
@@ -72,6 +74,12 @@ export interface RelayDeps {
   domain: string;
   requestTimeoutMs: number;
   heartbeatIntervalMs: number;
+  authStore: AuthStore | undefined;
+  rememberExposureOwnership: (exposureId: string, workspaceId: string) => void;
+  isExposureOwnedByOtherWorkspace: (
+    exposureId: string,
+    selfWorkspaceId: string | undefined,
+  ) => boolean;
   log: Logger;
   buildPublicUrl: (hostname: string) => string;
   registerExposure: (hostname: string, owner: AgentConnection) => boolean;
@@ -92,6 +100,8 @@ export class AgentConnection {
   private nextConnId = 1;
   private disposed = false;
   private handshaked = false;
+  private workspaceId: WorkspaceId | undefined;
+  readonly exposureAccess = new Map<string, { hostname: string; mode: "open" | "session" }>();
   private readonly publicSockets = new Map<
     number,
     { info: BridgeInfo; socket?: ServerWebSocket<unknown> | undefined }
@@ -159,9 +169,26 @@ export class AgentConnection {
       this.fail("handshake required before other messages");
       return;
     }
+    if (
+      this.deps.authStore !== undefined &&
+      this.workspaceId === undefined &&
+      msg.t !== "hello" &&
+      msg.t !== "auth" &&
+      msg.t !== "error"
+    ) {
+      this.send({
+        t: "auth-error",
+        code: "malformed",
+        message: "authenticate before sending other messages",
+      });
+      return;
+    }
     switch (msg.t) {
       case "hello":
         this.handleHello(msg.version);
+        return;
+      case "auth":
+        this.handleAuth(msg.token);
         return;
       case "expose":
         this.handleExpose(msg);
@@ -188,13 +215,6 @@ export class AgentConnection {
         return;
       case "abort":
         this.handleAbortFromAgent(msg);
-        return;
-      case "auth":
-        this.send({
-          t: "auth-error",
-          code: "malformed",
-          message: "authentication arrives in phase 4; connect without auth",
-        });
         return;
       case "req-head":
       case "req-body":
@@ -349,6 +369,17 @@ export class AgentConnection {
     }
   }
 
+  findSessionExposureByHostname(
+    hostname: string,
+  ): { exposureId: string; mode: "open" | "session" } | undefined {
+    for (const [exposureId, access] of [...this.exposureAccess.entries()]) {
+      if (access.hostname === hostname) {
+        return { exposureId, mode: access.mode };
+      }
+    }
+    return undefined;
+  }
+
   deliverFromPublic(connId: number, message: string | Uint8Array): void {
     const entry = this.publicSockets.get(connId);
     if (!entry) {
@@ -425,6 +456,25 @@ export class AgentConnection {
     this.log.info("agent disconnected");
   }
 
+  private handleAuth(token: string): void {
+    if (this.deps.authStore === undefined) {
+      this.send({ t: "auth-ok", workspaceId: "local" });
+      this.workspaceId = "local";
+      return;
+    }
+    const credential = this.deps.authStore.verifyClientToken(token);
+    if (!credential) {
+      this.log.warn("client authentication rejected");
+      this.send({ t: "auth-error", code: "invalid-token", message: "credential rejected" });
+      this.closeSocket();
+      this.dispose();
+      return;
+    }
+    this.workspaceId = credential.workspaceId;
+    this.log.info("agent authenticated", { workspaceId: credential.workspaceId });
+    this.send({ t: "auth-ok", workspaceId: credential.workspaceId });
+  }
+
   private handleHello(version: number): void {
     if (version !== PROTOCOL_VERSION) {
       this.send({
@@ -459,6 +509,15 @@ export class AgentConnection {
       });
       return;
     }
+    if (this.deps.isExposureOwnedByOtherWorkspace(msg.exposureId, this.workspaceId)) {
+      this.send({
+        t: "error",
+        code: "session-conflict",
+        message: "exposure belongs to another workspace",
+        context: { exposureId: msg.exposureId },
+      });
+      return;
+    }
 
     const owned = this.exposures.get(msg.exposureId);
     if (owned) {
@@ -483,6 +542,11 @@ export class AgentConnection {
       } while (!this.deps.registerExposure(hostname, this));
     }
     this.exposures.set(msg.exposureId, { hostname });
+    this.exposureAccess.set(msg.exposureId, {
+      hostname,
+      mode: msg.mode ?? "open",
+    });
+    this.deps.rememberExposureOwnership(msg.exposureId, this.workspaceId ?? "local");
     this.deps.rememberExposureHostname(msg.exposureId, hostname);
     this.log.info("exposure registered", { exposureId: msg.exposureId, hostname });
     this.send({
@@ -499,6 +563,7 @@ export class AgentConnection {
       this.deps.unregisterExposure(owned.hostname, this);
       this.deps.forgetExposureHostname(exposureId);
       this.exposures.delete(exposureId);
+      this.exposureAccess.delete(exposureId);
       this.log.info("exposure released", { exposureId });
     }
     this.send({ t: "unexposed", exposureId });

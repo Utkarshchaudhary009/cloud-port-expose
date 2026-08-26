@@ -54,14 +54,27 @@ Agent                          Relay
 
 - Credentials are sent only inside this frame — never in URLs, query strings, or logs.
 - Failure codes: `invalid-token`, `revoked-token`, `expired-token`, `malformed`.
-- All subsequent control messages require successful authentication.
-- **Phasing note:** enforcement lands in Phase 4. Until then relays accept unauthenticated
-  sessions and agents skip this step entirely.
+- All subsequent control messages require successful authentication. Exposures are owned by the
+  authenticated workspace; another workspace claiming an existing exposure id gets
+  `error {code: "session-conflict"}`.
+- When the relay runs without an auth store (local dev), it answers `auth-ok {workspaceId:"local"}`
+  and no credential is required.
+
+## 3b. Browser session authorization
+
+Exposures are created with access mode `open` (default) or `session`:
+
+- `session` exposures require a browser session token on every public request: cookie
+  `cpx_session=<bst_...>`; missing or invalid tokens get `401 x-relay-error: unauthorized`.
+- Workspace owners mint short-lived session tokens via
+  `POST /__auth/sessions {"exposureId"}` with `Authorization: Bearer <client credential>`.
+  Tokens are scoped to one exposure, expire (15 min default), and are revocable.
+- Client credentials are stored only as SHA-256 hashes; raw secrets never appear in URLs or logs.
 
 ## 3. Expose
 
 ```text
-  |-- expose {exposureId, name?} ->|
+  |-- expose {exposureId, name?, mode?} ->|
   |<---------- exposed {exposureId, hostname, url}
 ```
 

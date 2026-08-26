@@ -34,10 +34,13 @@ export interface AuthErrorMsg {
   message: string;
 }
 
+export type ExposureAccessMode = "open" | "session";
+
 export interface ExposeMsg {
   t: "expose";
   exposureId: string;
   name?: string;
+  mode?: ExposureAccessMode;
 }
 
 export interface ExposedMsg {

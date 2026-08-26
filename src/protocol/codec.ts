@@ -45,6 +45,8 @@ const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.`^_|~-]+$/;
 
 const ERROR_CONTEXT_FIELDS: readonly string[] = ["exposureId", "streamId", "connId"];
 
+const EXPOSURE_ACCESS_MODES: readonly string[] = ["open", "session"];
+
 const ERROR_CODES: readonly ErrorCode[] = [
   "bad-request",
   "unauthorized",
@@ -60,7 +62,7 @@ const ALLOWED_FIELDS_BY_TYPE: Record<string, readonly string[]> = {
   auth: ["token"],
   "auth-ok": ["workspaceId"],
   "auth-error": ["code", "message"],
-  expose: ["exposureId", "name"],
+  expose: ["exposureId", "name", "mode"],
   exposed: ["exposureId", "hostname", "url"],
   unexpose: ["exposureId"],
   unexposed: ["exposureId"],
@@ -204,10 +206,19 @@ const validators: Record<string, Validator> = {
     message: readString(o, "message"),
   }),
   expose: (o): ExposeMsg => {
+    const exposureId = readString(o, "exposureId");
     const name = readOptionalString(o, "name");
-    return name === undefined
-      ? { t: "expose", exposureId: readString(o, "exposureId") }
-      : { t: "expose", exposureId: readString(o, "exposureId"), name };
+    const modeValue = o.mode;
+    let mode: "open" | "session" | undefined;
+    if (modeValue !== undefined) {
+      mode = readLiteral(o, "mode", EXPOSURE_ACCESS_MODES) as "open" | "session";
+    }
+    if (name !== undefined && mode !== undefined) {
+      return { t: "expose", exposureId, name, mode };
+    }
+    if (name !== undefined) return { t: "expose", exposureId, name };
+    if (mode !== undefined) return { t: "expose", exposureId, mode };
+    return { t: "expose", exposureId };
   },
   exposed: (o): ExposedMsg => ({
     t: "exposed",

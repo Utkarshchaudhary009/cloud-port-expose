@@ -3,6 +3,9 @@ import { ExposeAgent } from "../agent/client";
 interface ParsedArgs {
   port?: number;
   relay?: string | undefined;
+  token?: string | undefined;
+  exposureId?: string | undefined;
+  mode: "open" | "session" | string | undefined;
   json: boolean;
   verbose: boolean;
   help: boolean;
@@ -15,19 +18,35 @@ Usage:
 
 Options:
   -r, --relay <url>   Relay websocket URL (or set CLOUD_EXPOSE_RELAY)
+  -t, --token <tok>   Client credential (or set CLOUD_EXPOSE_TOKEN)
+      --id <id>       Stable exposure id (default: random)
+      --mode <mode>   Exposure access mode: open | session (default: open)
       --json          Emit exactly one JSON object on stdout (success or failure)
       --verbose       Structured debug logging on stderr
   -h, --help          Show this help
 `;
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
-  const parsed: ParsedArgs = { json: false, verbose: false, help: false };
+  const parsed: ParsedArgs = { mode: undefined, json: false, verbose: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
       case "--relay":
       case "-r":
         parsed.relay = argv[i + 1];
+        i++;
+        break;
+      case "--token":
+      case "-t":
+        parsed.token = argv[i + 1];
+        i++;
+        break;
+      case "--id":
+        parsed.exposureId = argv[i + 1];
+        i++;
+        break;
+      case "--mode":
+        parsed.mode = argv[i + 1];
         i++;
         break;
       case "--json":
@@ -79,6 +98,22 @@ async function run(): Promise<number> {
     return 1;
   }
 
+  if (args.mode !== undefined && args.mode !== "open" && args.mode !== "session") {
+    console.error("✗ error: --mode must be 'open' or 'session'");
+    console.error(
+      "  next step: retry with --mode open (public) or --mode session (requires a browser token)",
+    );
+    emitJson({
+      ok: false,
+      error: {
+        code: "invalid-mode",
+        message: "--mode must be 'open' or 'session'",
+        nextStep: "retry with --mode open (public) or --mode session (requires a browser token)",
+      },
+    });
+    return 1;
+  }
+
   const relayUrl = args.relay ?? process.env.CLOUD_EXPOSE_RELAY;
   if (!relayUrl) {
     console.error("✗ error: no relay URL given");
@@ -97,9 +132,20 @@ async function run(): Promise<number> {
     return 1;
   }
 
+  const clientToken = args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? undefined;
+  if (clientToken === undefined && process.env.CLOUD_EXPOSE_REQUIRE_AUTH === "1") {
+    console.error("✗ error: this relay requires a client credential");
+    console.error(
+      "  next step: pass --token <cpx_...> or set CLOUD_EXPOSE_TOKEN with your workspace credential",
+    );
+    return 1;
+  }
   const agent = new ExposeAgent({
     relayUrl,
     originPort: args.port,
+    clientToken,
+    exposureId: args.exposureId,
+    accessMode: args.mode,
     logLevel: args.verbose ? "debug" : "info",
   });
   try {

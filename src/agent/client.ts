@@ -22,7 +22,11 @@ export interface AgentOptions {
   relayUrl: string;
   originPort: number;
   originHostname?: string;
-  exposureId?: string;
+  exposureId?: string | undefined;
+  /** Client credential sent in the auth frame after hello (required when relay auth is on). */
+  clientToken?: string | undefined;
+  /** Access mode for the exposure: open to anyone, or gated by a browser session token. */
+  accessMode?: "open" | "session" | undefined;
   logLevel?: LogLevel;
   connectTimeoutMs?: number;
   heartbeatIntervalMs?: number;
@@ -41,6 +45,7 @@ const WS_HEADERS_TO_DROP = new Set([
 
 export interface ExposedEndpoint {
   sessionId: string;
+  workspaceId?: string | undefined;
   exposureId: string;
   hostname: string;
   url: string;
@@ -81,6 +86,8 @@ function _deferred<T>(): Deferred<T> {
 
 export class ExposeAgent {
   readonly exposureId: string;
+  private readonly clientToken: string | undefined;
+  private readonly accessMode: "open" | "session";
   private readonly relayUrl: string;
   private readonly originPort: number;
   private readonly originHostname: string;
@@ -89,6 +96,8 @@ export class ExposeAgent {
   private readonly log: Logger;
   private ws: WebSocket | undefined;
   private sessionId: string | undefined;
+  private workspaceId: string | undefined;
+  private authWaiter: Deferred<{ workspaceId: string }> | undefined;
   private welcome: Deferred<WelcomeMsg> | undefined;
   private exposed: Deferred<ExposedMsg> | undefined;
   private readonly inflight = new Map<number, AbortController>();
@@ -97,6 +106,7 @@ export class ExposeAgent {
   private readonly pendingOriginFrames = new Map<number, (string | Uint8Array)[]>();
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private lastIncomingAt = Date.now();
+  private lastProtocolError: Error | undefined;
   private closedByUs = false;
 
   constructor(options: AgentOptions) {
@@ -104,6 +114,8 @@ export class ExposeAgent {
       throw new AgentError("relayUrl must start with ws:// or wss://");
     }
     this.relayUrl = options.relayUrl;
+    this.clientToken = options.clientToken;
+    this.accessMode = options.accessMode ?? "open";
     this.exposureId = options.exposureId ?? newId("exp");
     this.originPort = options.originPort;
     this.originHostname = options.originHostname ?? DEFAULT_ORIGIN_HOSTNAME;
@@ -170,16 +182,38 @@ export class ExposeAgent {
       });
 
       socket.addEventListener("close", () => {
-        settleConnect(new AgentError("connection to relay lost before handshake completed"));
+        settleConnect(
+          this.lastProtocolError ??
+            new AgentError("connection to relay lost before handshake completed"),
+        );
+        this.lastProtocolError = undefined;
         this.handleSocketClosed();
       });
 
+      const finishConnect = (): void => {
+        if (!this.connected) {
+          settleConnect(new AgentError("connection lost during authentication"));
+          return;
+        }
+        this.startHeartbeat();
+        this.log.info("session established", { sessionId: this.sessionId });
+        settleConnect();
+      };
       this.welcome = {
         resolve: (welcomeMsg) => {
           this.sessionId = welcomeMsg.sessionId;
-          this.startHeartbeat();
-          this.log.info("session established", { sessionId: welcomeMsg.sessionId });
-          settleConnect();
+          if (this.clientToken !== undefined) {
+            this.authWaiter = {
+              resolve: (authOk) => {
+                this.workspaceId = authOk.workspaceId;
+                finishConnect();
+              },
+              reject: settleConnect,
+            };
+            this.send({ t: "auth", token: this.clientToken });
+            return;
+          }
+          finishConnect();
         },
         reject: settleConnect,
       };
@@ -196,11 +230,21 @@ export class ExposeAgent {
       this.exposed = {
         resolve: (msg) => {
           this.log.info("endpoint active", { url: msg.url, hostname: msg.hostname });
-          resolve({ sessionId, exposureId: msg.exposureId, hostname: msg.hostname, url: msg.url });
+          resolve({
+            sessionId,
+            workspaceId: this.workspaceId,
+            exposureId: msg.exposureId,
+            hostname: msg.hostname,
+            url: msg.url,
+          });
         },
         reject,
       };
-      this.send({ t: "expose", exposureId: this.exposureId });
+      this.send({
+        t: "expose",
+        exposureId: this.exposureId,
+        ...(this.accessMode === "session" ? { mode: this.accessMode } : {}),
+      });
     });
   }
 
@@ -285,6 +329,7 @@ export class ExposeAgent {
       case "auth-error":
       case "error": {
         const error = new AgentError(`${msg.code}: ${msg.message}`);
+        this.lastProtocolError = error;
         this.log.error("relay reported an error", { code: msg.code });
         this.welcome?.reject(error);
         this.exposed?.reject(error);
@@ -292,6 +337,11 @@ export class ExposeAgent {
         this.exposed = undefined;
         return;
       }
+      case "auth-ok":
+        this.workspaceId = msg.workspaceId;
+        this.authWaiter?.resolve({ workspaceId: msg.workspaceId });
+        this.authWaiter = undefined;
+        return;
       case "exposed":
         this.exposed?.resolve(msg);
         this.exposed = undefined;

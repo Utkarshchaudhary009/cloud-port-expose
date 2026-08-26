@@ -25,10 +25,12 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
   const agentPath = options.agentPath ?? DEFAULT_AGENT_PATH;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const authStore = options.authStore;
   const log: Logger = createLogger({ subsystem: "relay", level: options.logLevel });
 
   const activeHostnames = new Map<string, ExposureBinding>();
   const hostnameByExposure = new Map<string, string>();
+  const workspaceByExposure = new Map<string, string>();
   const connections = new WeakMap<ServerWebSocket<unknown>, AgentConnection>();
   let portSuffix = "";
 
@@ -36,6 +38,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
     domain,
     requestTimeoutMs,
     heartbeatIntervalMs,
+    authStore,
     log,
     buildPublicUrl: (hostname: string) => `http://${hostname}${portSuffix}`,
     registerExposure: (hostname: string, owner: AgentConnection): boolean => {
@@ -71,6 +74,7 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
     },
     forgetExposureHostname: (exposureId: string): void => {
       hostnameByExposure.delete(exposureId);
+      workspaceByExposure.delete(exposureId);
     },
     releaseAll: (owner: AgentConnection): void => {
       for (const [hostname, binding] of [...activeHostnames.entries()]) {
@@ -79,6 +83,16 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
           log.info("exposure offline", { hostname, exposureId: binding.exposureId });
         }
       }
+    },
+    rememberExposureOwnership: (exposureId: string, workspaceId: string): void => {
+      workspaceByExposure.set(exposureId, workspaceId);
+    },
+    isExposureOwnedByOtherWorkspace: (
+      exposureId: string,
+      selfWorkspaceId: string | undefined,
+    ): boolean => {
+      const owner = workspaceByExposure.get(exposureId);
+      return owner !== undefined && owner !== (selfWorkspaceId ?? "local");
     },
     isExposureTakenByOther: (exposureId: string, self: AgentConnection): boolean => {
       const hostname = hostnameByExposure.get(exposureId);
@@ -104,6 +118,38 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
         }
         return undefined;
       }
+      if (url.pathname === "/__auth/sessions" && request.method === "POST") {
+        if (!authStore) {
+          return errorResponse(404, "no-route");
+        }
+        const credential = authStore.verifyClientToken(
+          (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, ""),
+        );
+        if (!credential) {
+          return new Response(JSON.stringify({ error: "unauthorized" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        let body: { exposureId?: string; ttlMs?: number } | null;
+        try {
+          body = (await request.json()) as { exposureId?: string; ttlMs?: number };
+        } catch {
+          return new Response(JSON.stringify({ error: "invalid-body" }), { status: 400 });
+        }
+        const exposureId = body.exposureId ?? "";
+        const owner = workspaceByExposure.get(exposureId);
+        if (!owner || owner !== credential.workspaceId) {
+          return new Response(JSON.stringify({ error: "unknown-exposure" }), { status: 404 });
+        }
+        const sessionToken = authStore.createBrowserSession(
+          exposureId,
+          credential.workspaceId,
+          body.ttlMs,
+        );
+        return Response.json({ sessionToken, expiresInMs: body.ttlMs ?? null });
+      }
+
       const hostHeader = request.headers.get("host");
       if (!hostHeader) {
         return errorResponse(400, "bad-host");
@@ -121,6 +167,32 @@ export function startRelay(options: RelayOptions = {}): Promise<RelayHandle> {
       if (!binding) {
         log.warn("public request to offline exposure", { hostname: host });
         return errorResponse(503, "offline");
+      }
+
+      if (authStore !== undefined) {
+        const access = binding.owner.findSessionExposureByHostname(host);
+        if (access?.mode === "session") {
+          const cookieHeader = request.headers.get("cookie") ?? "";
+          const tokenMatch = /(?:^|;\s*)cpx_session=([^;]+)/.exec(cookieHeader);
+          const sessionToken = tokenMatch?.[1];
+          let authorized = false;
+          if (sessionToken !== undefined) {
+            try {
+              authorized = authStore.verifyBrowserSession(
+                decodeURIComponent(sessionToken),
+                access.exposureId,
+              );
+            } catch {
+              authorized = false;
+            }
+          }
+          if (!authorized) {
+            return new Response(JSON.stringify({ error: "unauthorized" }), {
+              status: 401,
+              headers: { "content-type": "application/json", "x-relay-error": "unauthorized" },
+            });
+          }
+        }
       }
 
       if (isUpgrade) {
