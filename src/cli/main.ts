@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ExposeAgent } from "../agent/client";
 import { generateClientToken } from "../auth/identity";
 import { CLI_DESCRIPTION, CLI_NAME } from ".";
@@ -13,7 +14,7 @@ const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
 export const USAGE = `${CLI_NAME} — ${CLI_DESCRIPTION}
 
 Usage:
-  ${CLI_NAME} login [--relay <ws-url>] [--json]
+  ${CLI_NAME} login [--relay <ws-url>] [--json] [--show-token]
   ${CLI_NAME} <port> [--relay <ws-url>] [--name <name>] [--token <tok>] [--json] [--detach]
   ${CLI_NAME} --version
   ${CLI_NAME} --help
@@ -28,13 +29,18 @@ Options:
       --detach          Spawn the agent in the background and return immediately
       --json            Emit exactly one JSON object on stdout
       --verbose         Structured debug logging on stderr
+      --show-token      (login) include the issued client token in the JSON output
   -h, --help            Show this help
   -V, --version         Show version
 
 Environment:
-  CLOUD_EXPOSE_RELAY    Default relay WebSocket URL
-  CLOUD_EXPOSE_TOKEN    Default client credential
-  CLOUD_EXPOSE_CONFIG   Override config directory (default: ~/.cloud-expose)
+  CLOUD_EXPOSE_RELAY               Default relay WebSocket URL
+  CLOUD_EXPOSE_TOKEN               Default client credential
+  CLOUD_EXPOSE_CONFIG              Override config directory (default: ~/.cloud-expose)
+  CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN Set to 1 to auto-load the persisted login token.
+                                   Off by default because Phase 6's local-mode
+                                   login produces a token that is not registered
+                                   with any relay's authStore.
 `;
 
 export interface ParsedArgs {
@@ -50,6 +56,7 @@ export interface ParsedArgs {
   help: boolean;
   version: boolean;
   detach: boolean;
+  showToken: boolean;
   readyTimeoutMs: number;
 }
 
@@ -68,6 +75,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     version: false,
     detach: false,
     readyTimeoutMs: DEFAULT_READINESS_TIMEOUT_MS,
+    showToken: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -161,7 +169,7 @@ function readPersistedAuth(): { clientToken?: string; workspaceId?: string } {
 
 function writePersistedAuth(data: { clientToken: string; workspaceId: string }): void {
   const path = authPath();
-  mkdirSync(path.replace(/\/[^/]+$/, ""), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
@@ -176,7 +184,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     );
   }
   const clientToken = generateClientToken();
-  const workspaceId = `wsp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const workspaceId = `wsp_${randomUUID()}`;
 
   // In a real deployment this would call the control plane to register the
   // workspace and return a signed credential. Until the public control plane
