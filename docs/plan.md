@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–6 done; Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md). Next up: Phase 7.
+> **Status:** Implementation in progress — Phases 1–6 done; Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md). Phase 6 PR #6 is open with Sourcery review resolving blocking issues (auto-load token, --ready-timeout forwarding, --json for help/version). Next up: Phase 7 after PR #6 merges.
 >
 > **Amendment log:** 2026-08-26 — studied `mxschmitt/action-tmate`; hardened Phases 6 and 9, added Phase 11 (Release Engineering) and a non-committed Backlog section.
 >
@@ -260,6 +260,19 @@ A user can expose a port with one command and receive the endpoint immediately. 
 - [x] Each failure path's output contains an actionable next-step suggestion.
 - [x] Success output is withheld until the relay confirms the exposure is routable.
 - [x] Detached mode returns control immediately while the exposure remains reachable.
+- [x] `--show-token` opt-in reveals the login token in JSON output; the default `--json` output never leaks the credential.
+- [x] `cloud-expose login` does not auto-load the persisted credential unless `CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1` is set.
+- [x] `--ready-timeout` accepts both `--ready-timeout N` and `--ready-timeout=N` spellings; empty values do not swallow the next flag.
+- [x] All error paths emit exactly one JSON object with `{ ok, error: { code, message, nextStep } }`.
+- [x] `spawnDetached` re-execs `bin/cloud-expose` directly (not `bun ...`) so the child inherits the same shebang/wrapper and the readiness gate applies.
+
+### Sourcery review status
+
+All three blocking Sourcery findings on PR #6 are addressed in commits `9809177` and `72bcc0f`:
+
+1. **Token auto-loading** → `CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1` opt-in; the persisted credential is never loaded by default.
+2. **`--ready-timeout` forwarding** → `spawnDetached` now forwards the timeout as two separate arguments (`--ready-timeout`, `seconds`), which `parseArgs` recognizes.
+3. **`--help --json` / `--version --json`** → emit a structured JSON success object; plain text remains the default.
 
 ---
 
