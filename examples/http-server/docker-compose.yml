@@ -1,0 +1,31 @@
+# Generic HTTP server exposed through an outbound cloud-expose tunnel.
+#
+# One-time setup from the repository root:
+#   docker build -t cloud-expose:local .
+#
+# Then in this directory:
+#   cp .env.example .env.cloud-expose   # fill in your relay URL + credential
+#   docker compose up
+#
+# Traffic path (outbound only — no port is published anywhere):
+#   browser -> relay --(tunnel)--> agent -> 127.0.0.1:3000
+services:
+  web:
+    # Zero-dependency demo origin. Replace with your real application container;
+    # keep `network_mode` on the agent service pointing at this one.
+    image: node:22-alpine
+    user: node
+    working_dir: /srv
+    volumes:
+      - ./server.js:/srv/server.js:ro
+    command: ["node", "server.js"]
+    restart: unless-stopped
+
+  cloud-expose:
+    image: cloud-expose:local
+    # Share the app's network namespace so the agent's 127.0.0.1 dial reaches it.
+    network_mode: "service:web"
+    depends_on: [web]
+    restart: unless-stopped
+    env_file: .env.cloud-expose
+    command: ["3000", "--name", "demo-http"]

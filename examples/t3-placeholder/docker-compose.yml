@@ -1,0 +1,30 @@
+# T3 placeholder exposed through an outbound cloud-expose tunnel.
+#
+# This is intentionally MINIMAL: a stand-in listening on T3 Code's default
+# port :3773 so the plumbing can be tested before real T3 integration.
+# Deep T3 validation (HTTP + WebSocket flows, terminal, Git) is Phase 8 —
+# see docs/plan.md. Do not treat this example as a verified T3 setup.
+#
+# One-time setup from the repository root:
+#   docker build -t cloud-expose:local .
+#
+# Then in this directory:
+#   cp .env.example .env.cloud-expose   # fill in your relay URL + credential
+#   docker compose up
+services:
+  t3-placeholder:
+    image: node:22-alpine
+    user: node
+    working_dir: /srv
+    volumes:
+      - ./server.js:/srv/server.js:ro
+    command: ["node", "server.js"]
+    restart: unless-stopped
+
+  cloud-expose:
+    image: cloud-expose:local
+    network_mode: "service:t3-placeholder"
+    depends_on: [t3-placeholder]
+    restart: unless-stopped
+    env_file: .env.cloud-expose
+    command: ["3773", "--name", "agy-usage"]

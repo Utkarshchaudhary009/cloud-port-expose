@@ -111,3 +111,7 @@ dist
 
 # TernJS port file
 .tern-port
+
+
+# cloud-expose example credentials (only *.example placeholders are committed)
+examples/**/.env.cloud-expose
