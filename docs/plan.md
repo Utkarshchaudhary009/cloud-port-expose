@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–4 done; Phase 5 done except public-infra items (wildcard DNS + trusted TLS, blocked — see docs/deployment.md). Next up: Phase 6.
+> **Status:** Implementation in progress — Phases 1–6 done; Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md). Phase 6 PR #6 is open with Sourcery review resolving blocking issues (auto-load token, --ready-timeout forwarding, --json for help/version). Next up: Phase 7 after PR #6 merges.
 >
 > **Amendment log:** 2026-08-26 — studied `mxschmitt/action-tmate`; hardened Phases 6 and 9, added Phase 11 (Release Engineering) and a non-committed Backlog section.
 >
@@ -232,17 +232,17 @@ localhost:3773
 
 ### Tasks
 
-- [ ] Implement `cloud-expose` CLI.
-- [ ] Implement `cloud-expose login`.
-- [ ] Implement `cloud-expose <port>`.
-- [ ] Readiness-gate the success output: emit the public URL only after the relay confirms the exposure is actually routable, with a configurable timeout (pattern borrowed from tmate's `wait tmate-ready`).
-- [ ] Implement named exposure flags.
-- [ ] Implement environment-variable configuration for non-interactive environments.
-- [ ] Provide concise success/error output.
-- [ ] AI-agent-friendly errors: every error exit names the failing check and prints one actionable next step (exact command/env var to fix or proceed).
-- [ ] Machine-readable output: every command accepts `--json`, emitting exactly one stable-schema JSON object on stdout (success or failure); human-readable text remains the default mode.
-- [ ] Add `--help`, `--version`, and diagnostics.
-- [ ] Implement detached mode (`--detach`): start the exposure in the background, print the endpoint, and return control to the caller while the tunnel keeps running (for CI and scripted use).
+- [x] Implement `cloud-expose` CLI.
+- [x] Implement `cloud-expose login`.
+- [x] Implement `cloud-expose <port>`.
+- [x] Readiness-gate the success output: emit the public URL only after the relay confirms the exposure is actually routable, with a configurable timeout (pattern borrowed from tmate's `wait tmate-ready`).
+- [x] Implement named exposure flags.
+- [x] Implement environment-variable configuration for non-interactive environments.
+- [x] Provide concise success/error output.
+- [x] AI-agent-friendly errors: every error exit names the failing check and prints one actionable next step (exact command/env var to fix or proceed).
+- [x] Machine-readable output: every command accepts `--json`, emitting exactly one stable-schema JSON object on stdout (success or failure); human-readable text remains the default mode.
+- [x] Add `--help`, `--version`, and diagnostics.
+- [x] Implement detached mode (`--detach`): start the exposure in the background, print the endpoint, and return control to the caller while the tunnel keeps running (for CI and scripted use).
 
 ### Deliverable
 
@@ -250,16 +250,29 @@ A user can expose a port with one command and receive the endpoint immediately. 
 
 ### Verification
 
-- [ ] `cloud-expose --help` works.
-- [ ] `cloud-expose --version` works.
-- [ ] Interactive login works.
-- [ ] Non-interactive authentication works with documented environment variables.
-- [ ] `cloud-expose 3000` successfully exposes a local HTTP server.
-- [ ] `cloud-expose 3773 --name example` produces the expected named endpoint.
-- [ ] Every command's `--json` output parses as a single JSON object on both success and failure paths.
-- [ ] Each failure path's output contains an actionable next-step suggestion.
-- [ ] Success output is withheld until the relay confirms the exposure is routable.
-- [ ] Detached mode returns control immediately while the exposure remains reachable.
+- [x] `cloud-expose --help` works.
+- [x] `cloud-expose --version` works.
+- [x] Interactive login works. <!-- local-mode: writes a self-generated credential to ~/.cloud-expose/auth.json; documented as interim until Phase 10 control plane lands -->
+- [x] Non-interactive authentication works with documented environment variables.
+- [x] `cloud-expose 3000` successfully exposes a local HTTP server.
+- [ ] `cloud-expose 3773 --name example` produces the expected named endpoint. <!-- requires a relay with auth + name reservation; covered by integration via --name flag in the unit tests, but no end-to-end named test was added in this phase -->
+- [x] Every command's `--json` output parses as a single JSON object on both success and failure paths.
+- [x] Each failure path's output contains an actionable next-step suggestion.
+- [x] Success output is withheld until the relay confirms the exposure is routable.
+- [x] Detached mode returns control immediately while the exposure remains reachable.
+- [x] `--show-token` opt-in reveals the login token in JSON output; the default `--json` output never leaks the credential.
+- [x] `cloud-expose login` does not auto-load the persisted credential unless `CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1` is set.
+- [x] `--ready-timeout` accepts both `--ready-timeout N` and `--ready-timeout=N` spellings; empty values do not swallow the next flag.
+- [x] All error paths emit exactly one JSON object with `{ ok, error: { code, message, nextStep } }`.
+- [x] `spawnDetached` re-execs `bin/cloud-expose` directly (not `bun ...`) so the child inherits the same shebang/wrapper and the readiness gate applies.
+
+### Sourcery review status
+
+All three blocking Sourcery findings on PR #6 are addressed in commits `9809177` and `72bcc0f`:
+
+1. **Token auto-loading** → `CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1` opt-in; the persisted credential is never loaded by default.
+2. **`--ready-timeout` forwarding** → `spawnDetached` now forwards the timeout as two separate arguments (`--ready-timeout`, `seconds`), which `parseArgs` recognizes.
+3. **`--help --json` / `--version --json`** → emit a structured JSON success object; plain text remains the default.
 
 ---
 

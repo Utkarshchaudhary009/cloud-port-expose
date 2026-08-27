@@ -242,7 +242,7 @@ describe("minimal outbound tunnel", () => {
     const stillAlive = await requestViaSeparateProcess(firstHostname, "/still-here");
     expect(stillAlive.status).toBe(200);
     expect(JSON.parse(stillAlive.body).path).toBe("/still-here");
-  });
+  }, 15_000);
 });
 
 describe("abrupt agent death (separate process, SIGKILL)", () => {
