@@ -145,7 +145,7 @@ describe("cloud-expose CLI", () => {
     expect(r.exitCode).toBe(1);
     const parsed = JSON.parse(r.stdout.trim()) as {
       ok: boolean;
-      error: { code: string; nextStep: string };
+      error: { code: string; message: string; nextStep: string };
     };
     expect(parsed.ok).toBe(false);
     // The agent never connects to a dead relay; the ExposeAgent surfaces this
@@ -357,7 +357,10 @@ describe("cloud-expose CLI", () => {
         };
         const r = await runCli([String(origin.port), "--json", "--ready-timeout=3"], env);
         expect(r.exitCode).toBe(1);
-        const parsed = JSON.parse(r.stdout.trim()) as { ok: boolean; error: { code: string; message: string } };
+        const parsed = JSON.parse(r.stdout.trim()) as {
+          ok: boolean;
+          error: { code: string; message: string; nextStep: string };
+        };
         expect(parsed.ok).toBe(false);
         // The failure must mention authentication, not just a connection error.
         expect(parsed.error.message.toLowerCase()).toMatch(/auth|token|malformed/);
