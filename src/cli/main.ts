@@ -101,9 +101,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--ready-timeout": {
         let raw: string | undefined = argv[++i];
-        raw = raw?.startsWith("=") ? raw.slice(1) : raw;
-        if (raw === undefined || raw === "") raw = argv[++i];
-        const seconds = raw === undefined ? NaN : Number.parseFloat(raw);
+        if (raw === undefined) break;
+        raw = raw.startsWith("=") ? raw.slice(1) : raw;
+        if (raw === "") break;
+        const seconds = Number.parseFloat(raw);
         if (Number.isFinite(seconds) && seconds > 0) {
           parsed.readyTimeoutMs = Math.floor(seconds * 1000);
         }
@@ -111,6 +112,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       }
       case "--json":
         parsed.json = true;
+        break;
+      case "--show-token":
+        parsed.showToken = true;
         break;
       case "--verbose":
         parsed.verbose = true;
@@ -193,18 +197,25 @@ async function runLogin(args: ParsedArgs): Promise<number> {
   writePersistedAuth({ clientToken, workspaceId });
 
   if (args.json) {
-    console.log(
-      JSON.stringify({
-        ok: true,
-        command: "login",
-        workspaceId,
-        clientToken,
-        storedAt: authPath(),
-        note:
-          "Local-mode credential: usable for self-hosted relays that accept it. " +
-          "For hosted relays, set CLOUD_EXPOSE_TOKEN with the credential issued by the control plane.",
-      }),
-    );
+    const payload: Record<string, unknown> = {
+      ok: true,
+      command: "login",
+      workspaceId,
+      storedAt: authPath(),
+      tokenEchoed: args.showToken,
+      note:
+        "Local-mode credential: usable for self-hosted relays that accept it. " +
+        "For hosted relays, set CLOUD_EXPOSE_TOKEN with the credential issued by the control plane.",
+    };
+    if (args.showToken) {
+      payload.clientToken = clientToken;
+    } else {
+      // Explicitly do NOT include the token in default JSON output. CI logs,
+      // shell scrollback, and agent transcripts will pick up whatever the
+      // CLI writes to stdout; the token must be opt-in.
+      payload.clientTokenHint = `read from ${authPath()} (use --show-token to echo)`;
+    }
+    console.log(JSON.stringify(payload));
   } else {
     console.log(`✓ Logged in (local-mode)`);
     console.log(`  workspace: ${workspaceId}`);
@@ -339,12 +350,16 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
   return 0;
 }
 
-function spawnDetached(args: ParsedArgs, relay: string, token: string | undefined): number {
-  // Re-exec through the bin entry so the child gets the same shebang/wrapper
-  // and the import.meta.main guard isn't required.
+function spawnDetached(
+  args: ParsedArgs,
+  relay: string,
+  token: string | undefined,
+): Promise<number> {
+  // Re-exec the bin entry directly. The shebang routes to bun; the
+  // CLOUD_EXPOSE_DETACH_CHILD env var flips the child into the same
+  // runExpose path the parent would have taken.
   const binPath = join(import.meta.dir, "..", "..", "bin", "cloud-expose");
   const childArgs = [
-    binPath,
     String(args.port),
     "--relay",
     relay,
@@ -358,7 +373,7 @@ function spawnDetached(args: ParsedArgs, relay: string, token: string | undefine
     "--ready-timeout",
     String(args.readyTimeoutMs / 1000),
   ];
-  const child = spawn("bun", childArgs, {
+  const child = spawn(binPath, childArgs, {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CLOUD_EXPOSE_DETACH_CHILD: "1" },
@@ -376,52 +391,66 @@ function spawnDetached(args: ParsedArgs, relay: string, token: string | undefine
   // closed). We only wait until the child has emitted its first JSON line so
   // we can relay the readiness confirmation to our caller.
   return new Promise<number>((resolve) => {
+    let settled = false;
+    const cleanup = (): void => {
+      clearTimeout(watchdog);
+      clearInterval(checkReady);
+    };
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(code);
+    };
     const watchdog = setTimeout(() => {
       child.kill("SIGKILL");
-      resolve(
+      finish(
         fail(
           args,
           "detach-timeout",
-          `detached child did not confirm readiness within ${args.readyTimeoutMs + 2_000}ms`,
+          `detached child did not confirm readiness within ${args.readyTimeoutMs + 5_000}ms`,
           "re-run without --detach to see the failure inline, or increase --ready-timeout",
         ),
       );
     }, args.readyTimeoutMs + 5_000);
+    watchdog.unref();
 
     const checkReady = setInterval(() => {
       const newlineAt = stdoutBuf.indexOf("\n");
-      if (newlineAt >= 0) {
-        clearInterval(checkReady);
-        clearTimeout(watchdog);
-        const line = stdoutBuf.slice(0, newlineAt).trim();
-        let payload: Record<string, unknown>;
-        try {
-          payload = JSON.parse(line) as Record<string, unknown>;
-        } catch {
-          resolve(
-            fail(
-              args,
-              "detach-bad-output",
-              `detached child emitted unparseable output: ${line.slice(0, 200)}`,
-              "re-run without --detach for the full error",
-            ),
-          );
-          return;
-        }
-        // The child is now confirmed ready and running. Detach it from us so
-        // it survives our exit.
-        child.unref();
-        if (args.json) {
-          console.log(JSON.stringify({ ...payload, detached: true, pid: child.pid }));
-        } else {
-          if (stderrBuf.length > 0) process.stderr.write(stderrBuf);
-          console.log(`✓ Detached: PID ${child.pid}`);
-          console.log(`  ${(payload.url as string | undefined) ?? "(no url)"}`);
-        }
-        resolve(0);
+      if (newlineAt < 0) return;
+      const line = stdoutBuf.slice(0, newlineAt).trim();
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        finish(
+          fail(
+            args,
+            "detach-bad-output",
+            `detached child emitted unparseable output: ${line.slice(0, 200)}`,
+            "re-run without --detach for the full error",
+          ),
+        );
+        return;
       }
+      // The child is now confirmed ready and running. Detach it from us so
+      // it survives our exit.
+      try {
+        child.unref();
+      } catch {
+        // already exited
+      }
+      if (args.json) {
+        console.log(JSON.stringify({ ...payload, detached: true, pid: child.pid }));
+      } else {
+        if (stderrBuf.length > 0) process.stderr.write(stderrBuf);
+        console.log(`✓ Detached: PID ${child.pid}`);
+        console.log(`  ${(payload.url as string | undefined) ?? "(no url)"}`);
+      }
+      finish(0);
     }, 50);
-  }) as unknown as number;
+    checkReady.unref();
+  });
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {

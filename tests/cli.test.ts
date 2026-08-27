@@ -148,11 +148,16 @@ describe("cloud-expose CLI", () => {
       error: { code: string; nextStep: string };
     };
     expect(parsed.ok).toBe(false);
-    expect(["expose-failed", "connect-timeout"]).toContain(parsed.error.code);
+    // The agent never connects to a dead relay; the ExposeAgent surfaces this
+    // as a generic "failed to connect to <relay>" error, which the CLI
+    // passes through verbatim. Asserting the exact code (rather than either-or)
+    // locks the contract: any future change must be deliberate.
+    expect(parsed.error.code).toBe("expose-failed");
+    expect(parsed.error.message).toMatch(/failed to connect/i);
     expect(parsed.error.nextStep.length).toBeGreaterThan(0);
   });
 
-  test("login (local-mode) writes a token to disk and prints JSON", async () => {
+  test("login (local-mode) writes a token to disk and prints JSON without echoing the token", async () => {
     const r = await runCli(["login", "--relay", "wss://example.invalid", "--json"], {
       CLOUD_EXPOSE_CONFIG: configDir,
     });
@@ -161,15 +166,42 @@ describe("cloud-expose CLI", () => {
       ok: boolean;
       command: string;
       workspaceId: string;
-      clientToken: string;
+      clientToken?: string;
+      clientTokenHint?: string;
+      tokenEchoed: boolean;
     };
     expect(parsed.ok).toBe(true);
     expect(parsed.command).toBe("login");
-    expect(parsed.clientToken).toMatch(/^cpx_/);
+    // The token must NOT appear in default JSON output (CI logs / scrollback safety).
+    expect(parsed.clientToken).toBeUndefined();
+    expect(parsed.tokenEchoed).toBe(false);
+    expect(parsed.clientTokenHint).toMatch(/--show-token/);
     const authPath = join(configDir, "auth.json");
     expect(existsSync(authPath)).toBe(true);
     const stored = JSON.parse(readFileSync(authPath, "utf8")) as { clientToken: string };
-    expect(stored.clientToken).toBe(parsed.clientToken);
+    // The on-disk token is the real one, even though it was not echoed.
+    expect(stored.clientToken).toMatch(/^cpx_/);
+  });
+
+  test("login --json --show-token echoes the client token", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cpx-show-"));
+    try {
+      const r = await runCli(
+        ["login", "--relay", "wss://example.invalid", "--json", "--show-token"],
+        { CLOUD_EXPOSE_CONFIG: dir },
+      );
+      expect(r.exitCode).toBe(0);
+      const parsed = JSON.parse(r.stdout.trim()) as {
+        ok: boolean;
+        clientToken: string;
+        tokenEchoed: boolean;
+      };
+      expect(parsed.ok).toBe(true);
+      expect(parsed.tokenEchoed).toBe(true);
+      expect(parsed.clientToken).toMatch(/^cpx_/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("login without --relay and no env produces a structured error", async () => {
