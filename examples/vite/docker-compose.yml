@@ -1,0 +1,23 @@
+# Vite dev server exposed through an outbound cloud-expose tunnel.
+#
+# One-time setup from the repository root:
+#   docker build -t cloud-expose:local .
+#
+# Then in this directory:
+#   cp .env.example .env.cloud-expose   # fill in your relay URL + credential
+#   docker compose up
+#
+# No ports are published; the app is reachable only via the tunnel URL.
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    # NOTE: `ports:` intentionally absent. Reach the app through the tunnel.
+
+  cloud-expose:
+    image: cloud-expose:local
+    network_mode: "service:web"
+    depends_on: [web]
+    restart: unless-stopped
+    env_file: .env.cloud-expose
+    command: ["5173", "--name", "demo-vite"]

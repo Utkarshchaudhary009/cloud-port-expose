@@ -1,5 +1,6 @@
 export interface HttpOriginOptions {
   port?: number;
+  hostname?: string;
   handler?: (request: Request) => Response | Promise<Response>;
 }
 
@@ -19,7 +20,7 @@ const DEFAULT_HANDLER = (): Response =>
 export function startHttpOrigin(options: HttpOriginOptions = {}): Promise<HttpOriginHandle> {
   const server = Bun.serve({
     port: options.port ?? 0,
-    hostname: "127.0.0.1",
+    hostname: options.hostname ?? "127.0.0.1",
     fetch: options.handler ?? DEFAULT_HANDLER,
   });
   const { port, hostname } = server;

@@ -1,0 +1,22 @@
+# VCS & local tooling state
+.git
+.gitignore
+.gitattributes
+
+# Dependencies — installed fresh inside the builder stage
+node_modules
+
+# Tests, docs, examples — not part of the runtime image
+tests
+docs
+examples
+*.md
+
+# Local environment files / secrets — NEVER baked into images
+.env
+.env.*
+!.env.example
+
+# Misc workspace artifacts
+.kilo
+*.log

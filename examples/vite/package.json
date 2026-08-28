@@ -1,0 +1,11 @@
+{
+  "name": "cpx-vite-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173"
+  },
+  "devDependencies": {
+    "vite": "^6.0.7"
+  }
+}

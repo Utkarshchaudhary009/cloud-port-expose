@@ -25,6 +25,11 @@ Options:
   -n, --name <name>     Stable name → https://<name>.<domain>
       --id <id>         Stable exposure id (default: random)
       --mode <mode>     Exposure access mode: open | session (default: open)
+      --origin-hostname <host>
+                        Host the agent dials for the origin (default: 127.0.0.1).
+                        Use another container's DNS name (app) or the Docker host
+                        (host.docker.internal) for container-to-host targeting.
+                        IPv6 literals must be bracketed (e.g. [::1]).
       --ready-timeout   Seconds to wait for relay to confirm routable (default: 10)
       --detach          Spawn the agent in the background and return immediately
       --json            Emit exactly one JSON object on stdout
@@ -36,6 +41,7 @@ Options:
 Environment:
   CLOUD_EXPOSE_RELAY               Default relay WebSocket URL
   CLOUD_EXPOSE_TOKEN               Default client credential
+  CLOUD_EXPOSE_ORIGIN_HOSTNAME     Default origin hostname (same as --origin-hostname)
   CLOUD_EXPOSE_CONFIG              Override config directory (default: ~/.cloud-expose)
   CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN Set to 1 to auto-load the persisted login token.
                                    Off by default because Phase 6's local-mode
@@ -50,6 +56,7 @@ export interface ParsedArgs {
   token: string | undefined;
   exposureId: string | undefined;
   exposureName: string | undefined;
+  originHostname: string | undefined;
   mode: "open" | "session" | string | undefined;
   json: boolean;
   verbose: boolean;
@@ -60,6 +67,8 @@ export interface ParsedArgs {
   readyTimeoutMs: number;
 }
 
+const EMPTY_VALUE_SENTINEL = "\u0000EMPTY\u0000";
+
 export function parseArgs(argv: readonly string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     subcommand: null,
@@ -68,6 +77,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     token: undefined,
     exposureId: undefined,
     exposureName: undefined,
+    originHostname: undefined,
     mode: undefined,
     json: false,
     verbose: false,
@@ -78,31 +88,52 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     showToken: false,
   };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+    let arg = argv[i];
     if (arg === undefined) continue;
+    // Normalize `--flag=value` to the equivalent two-arg form so the switch
+    // below doesn't fall through to the default branch and silently drop the
+    // value (regression: previously only `--flag value` worked).
+    let inlineValue: string | null = null;
+    if (arg.startsWith("--") && arg.includes("=")) {
+      const eq = arg.indexOf("=");
+      inlineValue = arg.slice(eq + 1);
+      arg = arg.slice(0, eq);
+    }
+    const takeValue = (): string => {
+      if (inlineValue !== null) return inlineValue;
+      const raw = argv[++i];
+      if (raw === undefined) return "";
+      return raw.startsWith("=") ? raw.slice(1) : raw;
+    };
     switch (arg) {
       case "--relay":
       case "-r":
-        parsed.relay = argv[++i];
+        parsed.relay = takeValue();
         break;
       case "--token":
       case "-t":
-        parsed.token = argv[++i];
+        parsed.token = takeValue();
+        // Sentinel for runExpose: an empty value means the user passed
+        // `--token` with no value, so we must not silently fall back to
+        // CLOUD_EXPOSE_TOKEN. Surface the error in runExpose below.
+        // (runLogin ignores args.token and generates its own credential.)
+        if (parsed.token === "") parsed.token = EMPTY_VALUE_SENTINEL;
         break;
       case "--id":
-        parsed.exposureId = argv[++i];
+        parsed.exposureId = takeValue();
         break;
       case "--name":
       case "-n":
-        parsed.exposureName = argv[++i];
+        parsed.exposureName = takeValue();
+        break;
+      case "--origin-hostname":
+        parsed.originHostname = takeValue();
         break;
       case "--mode":
-        parsed.mode = argv[++i];
+        parsed.mode = takeValue();
         break;
       case "--ready-timeout": {
-        let raw: string | undefined = argv[++i];
-        if (raw === undefined) break;
-        raw = raw.startsWith("=") ? raw.slice(1) : raw;
+        const raw = takeValue();
         if (raw === "") break;
         const seconds = Number.parseFloat(raw);
         if (Number.isFinite(seconds) && seconds > 0) {
@@ -151,6 +182,88 @@ function fail(args: ParsedArgs, code: string, message: string, nextStep: string)
     console.log(JSON.stringify({ ok: false, error: { code, message, nextStep } }));
   }
   return 1;
+}
+
+/**
+ * Bare hostname, IPv4 literal, or bracketed IPv6 literal only — no scheme,
+ * path, port, whitespace, or control characters (§7: reject malformed hostnames
+ * and routing identifiers). Allows RFC-1123 style labels plus the `_` character
+ * found in Docker compose service DNS names.
+ *
+ * IPv6 must be written with brackets (`[::1]`, `[fe80::1]`) because the agent
+ * dials the origin as `{scheme}://${host}:${port}`, which is valid for IPv6 only
+ * in its bracketed form. Bare `::1` is therefore rejected.
+ */
+const MAX_IPV6_HEX_GROUPS = 8;
+const IPV4_DOTTED_QUAD =
+  /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+function isValidIpv6Group(group: string): boolean {
+  return /^[0-9A-Fa-f]{1,4}$/.test(group);
+}
+
+function isValidIpv6Segment(segment: string): boolean {
+  if (segment === "") return true;
+  const parts = segment.split(":");
+  // IPv4-mapped IPv6 (RFC 4291 §2.5.5.2): the last 32 bits are a dotted-quad.
+  const last = parts[parts.length - 1];
+  if (last !== undefined && IPV4_DOTTED_QUAD.test(last)) {
+    const hexParts = parts.slice(0, -1);
+    if (hexParts.length === 0) return true;
+    return hexParts.every(isValidIpv6Group);
+  }
+  return parts.every(isValidIpv6Group);
+}
+
+function isBracketedIpv6(value: string): boolean {
+  if (value.length < 3 || value[0] !== "[" || value[value.length - 1] !== "]") return false;
+  const inner = value.slice(1, -1);
+  if (inner === "" || !/^[0-9A-Fa-f:.]+$/.test(inner)) return false;
+  const hasDouble = inner.includes("::");
+
+  // "::" may appear exactly once.
+  if (hasDouble && inner.indexOf("::", inner.indexOf("::") + 2) !== -1) return false;
+
+  if (!hasDouble) {
+    // Uncompressed form: exactly 8 hex groups, OR 6 hex groups + IPv4 tail.
+    const parts = inner.split(":");
+    const last = parts[parts.length - 1];
+    if (last !== undefined && IPV4_DOTTED_QUAD.test(last)) {
+      return parts.length === 7 && parts.slice(0, -1).every(isValidIpv6Group);
+    }
+    return parts.length === MAX_IPV6_HEX_GROUPS && parts.every(isValidIpv6Group);
+  }
+
+  // Compressed form: "::" stands for one or more runs of zeroes, so the written
+  // groups left and right of it must sum to fewer than 8.
+  const parts = inner.split("::");
+  const left = parts[0] ?? "";
+  const right = parts[1] ?? "";
+  const writtenGroups = (segment: string): number => {
+    if (segment === "") return 0;
+    const segParts = segment.split(":");
+    const last = segParts[segParts.length - 1];
+    if (last !== undefined && IPV4_DOTTED_QUAD.test(last)) {
+      // The dotted-quad counts as 2 IPv6 groups.
+      return segParts.length + 1;
+    }
+    return segParts.length;
+  };
+  if (writtenGroups(left) + writtenGroups(right) >= MAX_IPV6_HEX_GROUPS) return false;
+  // Each side must be a valid sequence of hex groups (or empty) and the IPv4
+  // dotted-quad form is only allowed as the final right-side segment, never
+  // embedded anywhere on the left (e.g. `[1:2:3:4:1.2.3.4::1]` is invalid).
+  if (left.includes(".")) return false;
+  if (!isValidIpv6Segment(left)) return false;
+  if (!isValidIpv6Segment(right)) return false;
+  return true;
+}
+
+export function isValidOriginHostname(value: string): boolean {
+  if (value.length === 0 || value.length > 253) return false;
+  if (value.includes(":")) return isBracketedIpv6(value);
+  const label = /^[A-Za-z0-9]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$/;
+  return value.split(".").every((part) => label.test(part));
 }
 
 function authPath(): string {
@@ -273,6 +386,18 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
     );
   }
 
+  const originHostname = args.originHostname ?? process.env.CLOUD_EXPOSE_ORIGIN_HOSTNAME;
+  if (originHostname !== undefined && !isValidOriginHostname(originHostname)) {
+    const fromEnv = args.originHostname === undefined;
+    const source = fromEnv ? "CLOUD_EXPOSE_ORIGIN_HOSTNAME" : "--origin-hostname";
+    return fail(
+      args,
+      "invalid-origin-hostname",
+      `${source} must be a bare hostname, IPv4, or bracketed IPv6 literal (got "${originHostname}")`,
+      "retry with --origin-hostname app (same compose network), --origin-hostname host.docker.internal, --origin-hostname [::1], or unset the env var for the default 127.0.0.1",
+    );
+  }
+
   const persisted = readPersistedAuth();
   // The persisted credential is only auto-loaded when CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1.
   // Local-mode login (Phase 6) generates a token that is NOT registered in any
@@ -280,6 +405,16 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
   // would fail with `invalid-token`. Phase 10's control-plane login will flip
   // the default. Until then, callers must explicitly opt in.
   const autoLoad = process.env.CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN === "1";
+  // An explicit empty value (`--token` with no argument) must not silently
+  // fall back to CLOUD_EXPOSE_TOKEN — surface a structured error instead.
+  if (args.token === EMPTY_VALUE_SENTINEL) {
+    return fail(
+      args,
+      "missing-token",
+      "--token requires a value",
+      "pass --token <token> or set CLOUD_EXPOSE_TOKEN",
+    );
+  }
   const token =
     args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? (autoLoad ? persisted.clientToken : undefined);
 
@@ -290,6 +425,7 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
   const agent = new ExposeAgent({
     relayUrl: relay,
     originPort: args.port,
+    originHostname,
     clientToken: token,
     exposureId: args.exposureId,
     exposureName: args.exposureName,
@@ -355,10 +491,16 @@ function spawnDetached(
   relay: string,
   token: string | undefined,
 ): Promise<number> {
-  // Re-exec the bin entry directly. The shebang routes to bun; the
-  // CLOUD_EXPOSE_DETACH_CHILD env var flips the child into the same
-  // runExpose path the parent would have taken.
-  const binPath = join(import.meta.dir, "..", "..", "bin", "cloud-expose");
+  // Pick the entry to re-exec for the detached child.
+  //   - Source mode: `import.meta.dir` points at `bin/`, so the shim
+  //     `bin/cloud-expose` is reachable via `../../bin/cloud-expose`. We
+  //     invoke it under the current Bun runtime.
+  //   - Compiled binary (e.g. inside the agent Docker image): the binary
+  //     itself is the entry. The shim path does NOT exist in that image
+  //     because only the compiled binary is copied into the runtime layer,
+  //     so we re-exec `process.execPath` directly.
+  const shimPath = join(import.meta.dir, "..", "..", "bin", "cloud-expose");
+  const command = existsSync(shimPath) ? shimPath : process.execPath;
   const childArgs = [
     String(args.port),
     "--relay",
@@ -367,13 +509,14 @@ function spawnDetached(
     ...(args.exposureId ? ["--id", args.exposureId] : []),
     ...(args.exposureName ? ["--name", args.exposureName] : []),
     ...(args.mode ? ["--mode", args.mode] : []),
+    ...(args.originHostname ? ["--origin-hostname", args.originHostname] : []),
     ...(token ? ["--token", token] : []),
     ...(args.json ? ["--json"] : []),
     ...(args.verbose ? ["--verbose"] : []),
     "--ready-timeout",
     String(args.readyTimeoutMs / 1000),
   ];
-  const child = spawn(binPath, childArgs, {
+  const child = spawn(command, childArgs, {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CLOUD_EXPOSE_DETACH_CHILD: "1" },
