@@ -113,9 +113,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       case "--token":
       case "-t":
         parsed.token = takeValue();
-        // Sentinel for the next stage: an empty value means the user passed
+        // Sentinel for runExpose: an empty value means the user passed
         // `--token` with no value, so we must not silently fall back to
-        // CLOUD_EXPOSE_TOKEN. Surface the error in runExpose / runLogin below.
+        // CLOUD_EXPOSE_TOKEN. Surface the error in runExpose below.
+        // (runLogin ignores args.token and generates its own credential.)
         if (parsed.token === "") parsed.token = EMPTY_VALUE_SENTINEL;
         break;
       case "--id":
