@@ -14,7 +14,7 @@
 #     flag equivalents are supplied at RUNTIME (`docker run -e ...`),
 #     never as build args or ENV defaults here.
 
-FROM oven/bun:1 AS builder
+FROM oven/bun:1@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS builder
 WORKDIR /build
 
 # Copy only what `bun install` needs first so lockfile installs cache well.
@@ -36,8 +36,17 @@ RUN cp bin/cloud-expose bin/cloud-expose.ts \
     && bun build --compile --outfile /build/cloud-expose ./bin/cloud-expose.ts
 
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 WORKDIR /app
+
+# The system trust store: the agent dials `wss://...` relays, so Bun must be
+# able to validate real CA-signed certs. `debian:bookworm-slim` ships without
+# it, which otherwise surfaces as an opaque connection error (§8 fail-loud).
+# Base image is digest-pinned, so the apt-visible packages come from the Debian
+# snapshot baked into that digest rather than drifting upstream.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Non-root user with a stable UID/GID.
 RUN groupadd --system --gid 10001 cloud-expose \

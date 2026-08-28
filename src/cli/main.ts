@@ -29,6 +29,7 @@ Options:
                         Host the agent dials for the origin (default: 127.0.0.1).
                         Use another container's DNS name (app) or the Docker host
                         (host.docker.internal) for container-to-host targeting.
+                        IPv6 literals must be bracketed (e.g. [::1]).
       --ready-timeout   Seconds to wait for relay to confirm routable (default: 10)
       --detach          Spawn the agent in the background and return immediately
       --json            Emit exactly one JSON object on stdout
@@ -164,13 +165,52 @@ function fail(args: ParsedArgs, code: string, message: string, nextStep: string)
 }
 
 /**
- * Bare hostname or IP literal only — no scheme, path, port, whitespace, or
- * control characters (§7: reject malformed hostnames and routing identifiers).
- * Allows RFC-1123 style labels plus the `_` character found in Docker compose
- * service DNS names.
+ * Bare hostname, IPv4 literal, or bracketed IPv6 literal only — no scheme,
+ * path, port, whitespace, or control characters (§7: reject malformed hostnames
+ * and routing identifiers). Allows RFC-1123 style labels plus the `_` character
+ * found in Docker compose service DNS names.
+ *
+ * IPv6 must be written with brackets (`[::1]`, `[fe80::1]`) because the agent
+ * dials the origin as `{scheme}://${host}:${port}`, which is valid for IPv6 only
+ * in its bracketed form. Bare `::1` is therefore rejected.
  */
+const MAX_IPV6_HEX_GROUPS = 8;
+
+function isValidIpv6Group(group: string): boolean {
+  return /^[0-9A-Fa-f]{1,4}$/.test(group);
+}
+
+function isBracketedIpv6(value: string): boolean {
+  if (value.length < 3 || value[0] !== "[" || value[value.length - 1] !== "]") return false;
+  const inner = value.slice(1, -1);
+  if (inner === "" || !/^[0-9A-Fa-f:]+$/.test(inner)) return false;
+  const hasDouble = inner.includes("::");
+
+  // "::" may appear exactly once.
+  if (hasDouble && inner.indexOf("::", inner.indexOf("::") + 2) !== -1) return false;
+
+  if (!hasDouble) {
+    // Uncompressed form: exactly 8 groups of 1-4 hex digits.
+    const groups = inner.split(":");
+    return groups.length === MAX_IPV6_HEX_GROUPS && groups.every(isValidIpv6Group);
+  }
+
+  // Compressed form: "::" stands for one or more runs of zeroes, so the written
+  // groups left and right of it must sum to fewer than 8.
+  const parts = inner.split("::");
+  const left = parts[0] ?? "";
+  const right = parts[1] ?? "";
+  const good = (segment: string): boolean =>
+    segment === "" || segment.split(":").every(isValidIpv6Group);
+  if (!good(left) || !good(right)) return false;
+  const writtenGroups = (segment: string): number =>
+    segment === "" ? 0 : segment.split(":").length;
+  return writtenGroups(left) + writtenGroups(right) < MAX_IPV6_HEX_GROUPS;
+}
+
 export function isValidOriginHostname(value: string): boolean {
   if (value.length === 0 || value.length > 253) return false;
+  if (value.includes(":")) return isBracketedIpv6(value);
   const label = /^[A-Za-z0-9]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$/;
   return value.split(".").every((part) => label.test(part));
 }
@@ -300,8 +340,8 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
     return fail(
       args,
       "invalid-origin-hostname",
-      `--origin-hostname must be a bare hostname or IP (got "${originHostname}")`,
-      "retry with --origin-hostname app (same compose network), --origin-hostname host.docker.internal, or drop the flag for the default 127.0.0.1",
+      `--origin-hostname must be a bare hostname, IPv4, or bracketed IPv6 literal (got "${originHostname}")`,
+      "retry with --origin-hostname app (same compose network), --origin-hostname host.docker.internal, --origin-hostname [::1], or drop the flag for the default 127.0.0.1",
     );
   }
 

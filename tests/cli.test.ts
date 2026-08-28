@@ -510,7 +510,15 @@ describe("isValidOriginHostname", () => {
     expect(isValidOriginHostname("my_app")).toBe(true);
     expect(isValidOriginHostname("svc.example.com")).toBe(true);
   });
-  test("rejects schemes, ports, paths, whitespace, and empty values", () => {
+  test("accepts bracketed IPv6 literals the agent can dial", () => {
+    expect(isValidOriginHostname("[::1]")).toBe(true);
+    expect(isValidOriginHostname("[fe80::1]")).toBe(true);
+    expect(isValidOriginHostname("[::]")).toBe(true);
+    expect(isValidOriginHostname("[2001:db8::1]")).toBe(true);
+    expect(isValidOriginHostname("[2001:db8:0:0:0:0:2:1]")).toBe(true);
+    expect(isValidOriginHostname("[a:b:c:d:e:f:1:2]")).toBe(true);
+  });
+  test("rejects schemes, ports, paths, whitespace, empty values, and bare/malformed IPv6", () => {
     expect(isValidOriginHostname("")).toBe(false);
     expect(isValidOriginHostname("http://evil")).toBe(false);
     expect(isValidOriginHostname("app:3000")).toBe(false);
@@ -520,5 +528,17 @@ describe("isValidOriginHostname", () => {
     expect(isValidOriginHostname("trailing-")).toBe(false);
     expect(isValidOriginHostname(".")).toBe(false);
     expect(isValidOriginHostname(`a`.repeat(254))).toBe(false);
+    // bare IPv6 is rejected because the agent dials {scheme}://<host>:<port>
+    expect(isValidOriginHostname("::1")).toBe(false);
+    expect(isValidOriginHostname("fe80::1")).toBe(false);
+    // malformed bracketed IPv6
+    expect(isValidOriginHostname("[::1")).toBe(false);
+    expect(isValidOriginHostname("::1]")).toBe(false);
+    expect(isValidOriginHostname("[]")).toBe(false);
+    expect(isValidOriginHostname("[gg::1]")).toBe(false);
+    expect(isValidOriginHostname("[12345::1]")).toBe(false);
+    expect(isValidOriginHostname("[1:2:3:4:5:6:7:8:9]")).toBe(false);
+    expect(isValidOriginHostname("[::1::2]")).toBe(false);
+    expect(isValidOriginHostname("[1:2:3:4:5:6:7:8::]")).toBe(false);
   });
 });
