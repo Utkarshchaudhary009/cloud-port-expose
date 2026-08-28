@@ -39,10 +39,12 @@ RUN cp bin/cloud-expose bin/cloud-expose.ts \
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 WORKDIR /app
 
-# The system trust store: the agent dials `wss://...` relays, so Bun must be
-# able to validate real CA-signed certs. `debian:bookworm-slim` ships without
-# it, which otherwise surfaces as an opaque connection error (§8 fail-loud).
-# `ca-certificates` is unpinned intentionally: the base image's
+# Install `ca-certificates` so the system CA store is available for any tool
+# that opts in via `NODE_USE_SYSTEM_CA=1` (Bun's default TLS path uses its own
+# bundled Mozilla store, so the image is not strictly required for `wss://`
+# relay dials against public CAs — but missing CA store still surfaces as
+# opaque errors if a custom CA, a corporate proxy, or a self-hosted relay
+# chain is involved). The package is unpinned intentionally: the base image's
 # /etc/apt/sources.list still points at the live Debian mirror, so any
 # reproducibility guarantee must come from the digest-pinned base, not from
 # pinning individual apt packages. For tighter supply-chain control, swap

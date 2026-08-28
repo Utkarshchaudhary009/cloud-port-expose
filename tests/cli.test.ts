@@ -11,6 +11,7 @@ const CLI_PATH = join(import.meta.dir, "..", "bin", "cloud-expose");
 const BUN = "bun";
 
 let origin: HttpOriginHandle;
+let altOrigin: HttpOriginHandle;
 let relay: RelayHandle;
 let configDir = "";
 
@@ -117,12 +118,25 @@ beforeAll(async () => {
       return Response.json({ method: request.method, path: url.pathname });
     },
   });
+  // altOrigin listens on a different loopback address. Tests that exercise
+  // --origin-hostname / CLOUD_EXPOSE_ORIGIN_HOSTNAME point the agent at it;
+  // if the flag/env were ignored, the agent would fall back to 127.0.0.1 and
+  // the requests would land on `origin` (different handler) instead, failing
+  // the assertion below. This makes the wiring tests actually fail-loud.
+  altOrigin = await startHttpOrigin({
+    hostname: "127.0.0.2",
+    handler: async (request) => {
+      const url = new URL(request.url);
+      return Response.json({ marker: "alt-origin", path: url.pathname });
+    },
+  });
   relay = await startRelay({ port: 0 });
   configDir = mkdtempSync(join(tmpdir(), "cpx-cli-"));
 });
 
 afterAll(async () => {
   origin.stop();
+  altOrigin.stop();
   await relay.stop();
   if (configDir && existsSync(configDir)) {
     rmSync(configDir, { recursive: true, force: true });
@@ -290,32 +304,17 @@ describe("cloud-expose CLI", () => {
   });
 
   test("expose <port> with --json returns a usable URL and reaches the origin", async () => {
-    const proc = Bun.spawn(
-      [BUN, "run", CLI_PATH, String(origin.port), "--relay", relay.agentUrl, "--json"],
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env, CLOUD_EXPOSE_RELAY: "" } },
-    );
-    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-    let stdoutBuf = "";
+    const { parsed, cleanup } = await spawnJsonProc<{
+      ok: boolean;
+      url: string;
+      hostname: string;
+      sessionId: string;
+      exposureId: string;
+    }>({
+      args: [String(origin.port), "--relay", relay.agentUrl, "--json"],
+      env: { CLOUD_EXPOSE_RELAY: "" },
+    });
     try {
-      // Read until the JSON line arrives (newline-terminated) or 5s elapses.
-      const start = Date.now();
-      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
-        const readPromise = stdoutReader.read();
-        const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), 250),
-        );
-        const { value, done } = await Promise.race([readPromise, timer]);
-        if (done && value === undefined) break;
-        if (value) stdoutBuf += decoder.decode(value);
-      }
-      const parsed = JSON.parse(stdoutBuf.trim()) as {
-        ok: boolean;
-        url: string;
-        hostname: string;
-        sessionId: string;
-        exposureId: string;
-      };
       expect(parsed.ok).toBe(true);
       expect(parsed.url).toMatch(/^http:\/\/[a-z0-9]+\.localhost:\d+$/);
 
@@ -327,76 +326,40 @@ describe("cloud-expose CLI", () => {
       const body = (await res.json()) as { method: string; path: string };
       expect(body.path).toBe("/probe");
     } finally {
-      await stdoutReader.cancel().catch(() => {});
-      proc.kill("SIGTERM");
-      try {
-        await proc.exited;
-      } catch {
-        // already dead
-      }
+      await cleanup();
     }
   }, 15_000);
 
   test("--detach returns immediately and keeps the exposure alive", async () => {
-    const proc = Bun.spawn(
-      [BUN, "run", CLI_PATH, String(origin.port), "--relay", relay.agentUrl, "--detach", "--json"],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-    let stdoutBuf = "";
-    let parsed: {
+    const { parsed, cleanup } = await spawnJsonProc<{
       ok: boolean;
       detached: boolean;
       url: string;
       hostname: string;
       pid: number;
-    } | null = null;
+    }>({
+      args: [String(origin.port), "--relay", relay.agentUrl, "--detach", "--json"],
+      env: {},
+    });
     try {
-      const start = Date.now();
-      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
-        const readPromise = stdoutReader.read();
-        const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), 250),
-        );
-        const { value, done } = await Promise.race([readPromise, timer]);
-        if (done && value === undefined) break;
-        if (value) stdoutBuf += decoder.decode(value);
-      }
-      const value = JSON.parse(stdoutBuf.trim()) as {
-        ok: boolean;
-        detached: boolean;
-        url: string;
-        hostname: string;
-        pid: number;
-      };
-      expect(value.ok).toBe(true);
-      expect(value.detached).toBe(true);
-      expect(value.pid).toBeGreaterThan(0);
-      parsed = value;
+      expect(parsed.ok).toBe(true);
+      expect(parsed.detached).toBe(true);
+      expect(parsed.pid).toBeGreaterThan(0);
 
       // The detached child should be running. Verify reachability.
       await new Promise((resolve) => setTimeout(resolve, 500));
       const res = await fetch(`http://127.0.0.1:${relay.port}/after-detach`, {
-        headers: { host: `${value.hostname}:${relay.port}` },
+        headers: { host: `${parsed.hostname}:${relay.port}` },
       });
       expect(res.status).toBe(200);
-    } finally {
-      await stdoutReader.cancel().catch(() => {});
-      // Wait for the parent CLI to exit naturally (it should, since it's just a wrapper).
-      try {
-        await proc.exited;
-      } catch {
-        // ignore
-      }
       // Clean up the detached child.
-      if (parsed !== null) {
-        try {
-          process.kill(parsed.pid, "SIGTERM");
-        } catch {
-          // already gone
-        }
+      try {
+        process.kill(parsed.pid, "SIGTERM");
+      } catch {
+        // already gone
       }
+    } finally {
+      await cleanup();
     }
   }, 20_000);
 
@@ -480,16 +443,19 @@ describe("cloud-expose CLI", () => {
     }
   });
 
-  test("expose with explicit --origin-hostname 127.0.0.1 reaches the origin", async () => {
+  test("expose with explicit --origin-hostname points the agent at a non-default host", async () => {
     // Same behavior as the default, but exercises the flag → agent wiring
     // end-to-end (the flag is what enables container-to-host targeting).
+    // We point at altOrigin (127.0.0.2); if --origin-hostname were ignored,
+    // the request would land on `origin` (127.0.0.1) and the marker check below
+    // would fail.
     const { parsed, cleanup } = await spawnJsonProc<{ ok: boolean; hostname: string }>({
       args: [
-        String(origin.port),
+        String(altOrigin.port),
         "--relay",
         relay.agentUrl,
         "--origin-hostname",
-        "127.0.0.1",
+        "127.0.0.2",
         "--json",
       ],
       env: { CLOUD_EXPOSE_RELAY: "" },
@@ -500,17 +466,19 @@ describe("cloud-expose CLI", () => {
         headers: { host: `${parsed.hostname}:${relay.port}` },
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { path: string };
+      const body = (await res.json()) as { marker?: string; path: string };
       expect(body.path).toBe("/origin-host");
+      expect(body.marker).toBe("alt-origin");
     } finally {
       await cleanup();
     }
   }, 15_000);
 
   test("expose honors CLOUD_EXPOSE_ORIGIN_HOSTNAME env var", async () => {
+    // Point at altOrigin via the env var; same fail-loud behavior as above.
     const { parsed, cleanup } = await spawnJsonProc<{ ok: boolean; hostname: string }>({
-      args: [String(origin.port), "--relay", relay.agentUrl, "--json"],
-      env: { CLOUD_EXPOSE_RELAY: "", CLOUD_EXPOSE_ORIGIN_HOSTNAME: "127.0.0.1" },
+      args: [String(altOrigin.port), "--relay", relay.agentUrl, "--json"],
+      env: { CLOUD_EXPOSE_RELAY: "", CLOUD_EXPOSE_ORIGIN_HOSTNAME: "127.0.0.2" },
     });
     try {
       expect(parsed.ok).toBe(true);
@@ -518,6 +486,8 @@ describe("cloud-expose CLI", () => {
         headers: { host: `${parsed.hostname}:${relay.port}` },
       });
       expect(res.status).toBe(200);
+      const body = (await res.json()) as { marker?: string; path: string };
+      expect(body.marker).toBe("alt-origin");
     } finally {
       await cleanup();
     }

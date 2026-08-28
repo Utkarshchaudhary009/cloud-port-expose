@@ -463,10 +463,16 @@ function spawnDetached(
   relay: string,
   token: string | undefined,
 ): Promise<number> {
-  // Re-exec the bin entry directly. The shebang routes to bun; the
-  // CLOUD_EXPOSE_DETACH_CHILD env var flips the child into the same
-  // runExpose path the parent would have taken.
-  const binPath = join(import.meta.dir, "..", "..", "bin", "cloud-expose");
+  // Pick the entry to re-exec for the detached child.
+  //   - Source mode: `import.meta.dir` points at `bin/`, so the shim
+  //     `bin/cloud-expose` is reachable via `../../bin/cloud-expose`. We
+  //     invoke it under the current Bun runtime.
+  //   - Compiled binary (e.g. inside the agent Docker image): the binary
+  //     itself is the entry. The shim path does NOT exist in that image
+  //     because only the compiled binary is copied into the runtime layer,
+  //     so we re-exec `process.execPath` directly.
+  const shimPath = join(import.meta.dir, "..", "..", "bin", "cloud-expose");
+  const command = existsSync(shimPath) ? shimPath : process.execPath;
   const childArgs = [
     String(args.port),
     "--relay",
@@ -482,7 +488,7 @@ function spawnDetached(
     "--ready-timeout",
     String(args.readyTimeoutMs / 1000),
   ];
-  const child = spawn(binPath, childArgs, {
+  const child = spawn(command, childArgs, {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CLOUD_EXPOSE_DETACH_CHILD: "1" },
