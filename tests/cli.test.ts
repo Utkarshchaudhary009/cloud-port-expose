@@ -474,6 +474,36 @@ describe("cloud-expose CLI", () => {
     }
   }, 15_000);
 
+  test("--origin-hostname=<value> (equals form) is honored, not silently dropped", async () => {
+    // Regression: the parser previously only consumed argv[++i] for
+    // --origin-hostname, so `--origin-hostname=127.0.0.2` reached the switch as
+    // a single token and fell through to the default branch (no error, agent
+    // dialed 127.0.0.1). The equals form must reach altOrigin just like the
+    // space-separated form.
+    const { parsed, cleanup } = await spawnJsonProc<{ ok: boolean; hostname: string }>({
+      args: [
+        String(altOrigin.port),
+        "--relay",
+        relay.agentUrl,
+        "--origin-hostname=127.0.0.2",
+        "--json",
+      ],
+      env: { CLOUD_EXPOSE_RELAY: "" },
+    });
+    try {
+      expect(parsed.ok).toBe(true);
+      const res = await fetch(`http://127.0.0.1:${relay.port}/origin-host-eq`, {
+        headers: { host: `${parsed.hostname}:${relay.port}` },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { marker?: string; path: string };
+      expect(body.path).toBe("/origin-host-eq");
+      expect(body.marker).toBe("alt-origin");
+    } finally {
+      await cleanup();
+    }
+  }, 15_000);
+
   test("expose honors CLOUD_EXPOSE_ORIGIN_HOSTNAME env var", async () => {
     // Point at altOrigin via the env var; same fail-loud behavior as above.
     const { parsed, cleanup } = await spawnJsonProc<{ ok: boolean; hostname: string }>({
@@ -544,6 +574,8 @@ describe("isValidOriginHostname", () => {
     expect(isValidOriginHostname("[::ffff:192.0.2.128]")).toBe(true);
     // 6 hex groups + IPv4 tail in uncompressed form.
     expect(isValidOriginHostname("[0:0:0:0:0:ffff:127.0.0.1]")).toBe(true);
+    // Dotted-quad as the only right-side content after "::".
+    expect(isValidOriginHostname("[::192.0.2.1]")).toBe(true);
   });
   test("rejects malformed IPv4-mapped IPv6 literals", () => {
     // Dotted-quad out of range.

@@ -86,36 +86,47 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     showToken: false,
   };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+    let arg = argv[i];
     if (arg === undefined) continue;
+    // Normalize `--flag=value` to the equivalent two-arg form so the switch
+    // below doesn't fall through to the default branch and silently drop the
+    // value (regression: previously only `--flag value` worked).
+    let inlineValue: string | null = null;
+    if (arg.startsWith("--") && arg.includes("=")) {
+      const eq = arg.indexOf("=");
+      inlineValue = arg.slice(eq + 1);
+      arg = arg.slice(0, eq);
+    }
+    const takeValue = (): string => {
+      if (inlineValue !== null) return inlineValue;
+      const raw = argv[++i];
+      if (raw === undefined) return "";
+      return raw.startsWith("=") ? raw.slice(1) : raw;
+    };
     switch (arg) {
       case "--relay":
       case "-r":
-        parsed.relay = argv[++i];
+        parsed.relay = takeValue();
         break;
       case "--token":
       case "-t":
-        parsed.token = argv[++i];
+        parsed.token = takeValue();
         break;
       case "--id":
-        parsed.exposureId = argv[++i];
+        parsed.exposureId = takeValue();
         break;
       case "--name":
       case "-n":
-        parsed.exposureName = argv[++i];
+        parsed.exposureName = takeValue();
         break;
-      case "--origin-hostname": {
-        const value = argv[++i];
-        parsed.originHostname = value ?? "";
+      case "--origin-hostname":
+        parsed.originHostname = takeValue();
         break;
-      }
       case "--mode":
-        parsed.mode = argv[++i];
+        parsed.mode = takeValue();
         break;
       case "--ready-timeout": {
-        let raw: string | undefined = argv[++i];
-        if (raw === undefined) break;
-        raw = raw.startsWith("=") ? raw.slice(1) : raw;
+        const raw = takeValue();
         if (raw === "") break;
         const seconds = Number.parseFloat(raw);
         if (Number.isFinite(seconds) && seconds > 0) {
@@ -191,7 +202,7 @@ function isValidIpv6Segment(segment: string): boolean {
   const last = parts[parts.length - 1];
   if (last !== undefined && IPV4_DOTTED_QUAD.test(last)) {
     const hexParts = parts.slice(0, -1);
-    if (hexParts.length === 0) return false;
+    if (hexParts.length === 0) return true;
     return hexParts.every(isValidIpv6Group);
   }
   return parts.every(isValidIpv6Group);

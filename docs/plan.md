@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–6 done; Phase 7 nearly done (Docker image, docs, examples, container-to-host targeting verified end-to-end; remaining: trusted-TLS HTTPS + T3 instance checks). Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md).
+> **Status:** Implementation in progress — Phases 1–6 done; Phase 7 nearly done (Docker image, docs, examples, container-to-container targeting verified end-to-end; remaining: trusted-TLS HTTPS + T3 instance checks). Container-to-host / local-network targeting is documented but not exercised by an automated test in this phase. Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md).
 >
 > **Amendment log:** 2026-08-26 — studied `mxschmitt/action-tmate`; hardened Phases 6 and 9, added Phase 11 (Release Engineering) and a non-committed Backlog section.
 >
