@@ -73,6 +73,20 @@ Netns-sharing caveats (real limitations, stated plainly):
   `--origin-hostname host.docker.internal` to reach a host-port-published service). The value
   must be a bare hostname or IP — no scheme, port, or path — and is validated by the CLI
   (`CLOUD_EXPOSE_ORIGIN_HOSTNAME` sets the same thing via the environment).
+- On the **Linux Docker engine** (the runtime this guide targets), `host.docker.internal` does
+  not resolve by default — that DNS name only works out of the box on Docker Desktop
+  (macOS/Windows). To make it work on Linux, add it to the cloud-expose service's hosts:
+
+  ```yaml
+  cloud-expose:
+    image: cloud-expose:local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: "service:web"
+    ...
+  ```
+
+  Without this, the agent fails the origin dial with `EAI_AGAIN` (DNS resolution error).
 
 ## Secret injection: env file, nothing else
 

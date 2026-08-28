@@ -36,6 +36,58 @@ function runCli(
   });
 }
 
+async function spawnJsonProc<T = unknown>(options: {
+  args: string[];
+  env: Record<string, string>;
+}): Promise<{
+  proc: ReturnType<typeof Bun.spawn>;
+  parsed: T;
+  cleanup: () => Promise<void>;
+}> {
+  const proc = Bun.spawn([BUN, "run", CLI_PATH, ...options.args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, ...options.env },
+  });
+  const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    const start = Date.now();
+    while (Date.now() - start < 5_000 && !buf.includes("\n")) {
+      const readPromise = reader.read();
+      const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
+        setTimeout(() => resolve({ value: undefined, done: true }), 250),
+      );
+      const { value, done } = await Promise.race([readPromise, timer]);
+      if (done && value === undefined) break;
+      if (value) buf += decoder.decode(value);
+    }
+    return {
+      proc,
+      parsed: JSON.parse(buf.trim()) as T,
+      cleanup: async () => {
+        await reader.cancel().catch(() => {});
+        proc.kill("SIGTERM");
+        try {
+          await proc.exited;
+        } catch {
+          // already dead
+        }
+      },
+    };
+  } catch (err) {
+    await reader.cancel().catch(() => {});
+    proc.kill("SIGTERM");
+    try {
+      await proc.exited;
+    } catch {
+      // already dead
+    }
+    throw err;
+  }
+}
+
 beforeAll(async () => {
   origin = await startHttpOrigin({
     handler: async (request) => {
@@ -409,11 +461,8 @@ describe("cloud-expose CLI", () => {
   test("expose with explicit --origin-hostname 127.0.0.1 reaches the origin", async () => {
     // Same behavior as the default, but exercises the flag → agent wiring
     // end-to-end (the flag is what enables container-to-host targeting).
-    const proc = Bun.spawn(
-      [
-        BUN,
-        "run",
-        CLI_PATH,
+    const { parsed, cleanup } = await spawnJsonProc<{ ok: boolean; hostname: string }>({
+      args: [
         String(origin.port),
         "--relay",
         relay.agentUrl,
@@ -421,23 +470,9 @@ describe("cloud-expose CLI", () => {
         "127.0.0.1",
         "--json",
       ],
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env, CLOUD_EXPOSE_RELAY: "" } },
-    );
-    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-    let stdoutBuf = "";
+      env: { CLOUD_EXPOSE_RELAY: "" },
+    });
     try {
-      const start = Date.now();
-      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
-        const readPromise = stdoutReader.read();
-        const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), 250),
-        );
-        const { value, done } = await Promise.race([readPromise, timer]);
-        if (done && value === undefined) break;
-        if (value) stdoutBuf += decoder.decode(value);
-      }
-      const parsed = JSON.parse(stdoutBuf.trim()) as { ok: boolean; hostname: string };
       expect(parsed.ok).toBe(true);
       const res = await fetch(`http://127.0.0.1:${relay.port}/origin-host`, {
         headers: { host: `${parsed.hostname}:${relay.port}` },
@@ -446,59 +481,52 @@ describe("cloud-expose CLI", () => {
       const body = (await res.json()) as { path: string };
       expect(body.path).toBe("/origin-host");
     } finally {
-      await stdoutReader.cancel().catch(() => {});
-      proc.kill("SIGTERM");
-      try {
-        await proc.exited;
-      } catch {
-        // already dead
-      }
+      await cleanup();
     }
   }, 15_000);
 
   test("expose honors CLOUD_EXPOSE_ORIGIN_HOSTNAME env var", async () => {
-    const proc = Bun.spawn(
-      [BUN, "run", CLI_PATH, String(origin.port), "--relay", relay.agentUrl, "--json"],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          CLOUD_EXPOSE_RELAY: "",
-          CLOUD_EXPOSE_ORIGIN_HOSTNAME: "127.0.0.1",
-        },
-      },
-    );
-    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-    let stdoutBuf = "";
+    const { parsed, cleanup } = await spawnJsonProc<{ ok: boolean; hostname: string }>({
+      args: [String(origin.port), "--relay", relay.agentUrl, "--json"],
+      env: { CLOUD_EXPOSE_RELAY: "", CLOUD_EXPOSE_ORIGIN_HOSTNAME: "127.0.0.1" },
+    });
     try {
-      const start = Date.now();
-      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
-        const readPromise = stdoutReader.read();
-        const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), 250),
-        );
-        const { value, done } = await Promise.race([readPromise, timer]);
-        if (done && value === undefined) break;
-        if (value) stdoutBuf += decoder.decode(value);
-      }
-      const parsed = JSON.parse(stdoutBuf.trim()) as { ok: boolean; hostname: string };
       expect(parsed.ok).toBe(true);
       const res = await fetch(`http://127.0.0.1:${relay.port}/origin-env`, {
         headers: { host: `${parsed.hostname}:${relay.port}` },
       });
       expect(res.status).toBe(200);
     } finally {
-      await stdoutReader.cancel().catch(() => {});
-      proc.kill("SIGTERM");
-      try {
-        await proc.exited;
-      } catch {
-        // already dead
-      }
+      await cleanup();
     }
   }, 15_000);
+
+  test("--origin-hostname without a value reports invalid-origin-hostname (no silent fallback)", async () => {
+    // Put --json before --origin-hostname so the parser can't swallow it
+    // as the flag's value.
+    const r = await runCli(["--json", "3000", "--relay", "ws://127.0.0.1:1", "--origin-hostname"]);
+    expect(r.exitCode).toBe(1);
+    const parsed = JSON.parse(r.stdout.trim()) as {
+      ok: boolean;
+      error: { code: string; message: string };
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error.code).toBe("invalid-origin-hostname");
+  });
+
+  test("invalid CLOUD_EXPOSE_ORIGIN_HOSTNAME attributes the error to the env var", async () => {
+    const r = await runCli(["--json", "3000", "--relay", "ws://127.0.0.1:1"], {
+      CLOUD_EXPOSE_ORIGIN_HOSTNAME: "not a host!",
+    });
+    expect(r.exitCode).toBe(1);
+    const parsed = JSON.parse(r.stdout.trim()) as {
+      ok: boolean;
+      error: { code: string; message: string };
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error.code).toBe("invalid-origin-hostname");
+    expect(parsed.error.message).toContain("CLOUD_EXPOSE_ORIGIN_HOSTNAME");
+  });
 });
 
 describe("isValidOriginHostname", () => {
@@ -517,6 +545,23 @@ describe("isValidOriginHostname", () => {
     expect(isValidOriginHostname("[2001:db8::1]")).toBe(true);
     expect(isValidOriginHostname("[2001:db8:0:0:0:0:2:1]")).toBe(true);
     expect(isValidOriginHostname("[a:b:c:d:e:f:1:2]")).toBe(true);
+  });
+  test("accepts IPv4-mapped IPv6 literals (RFC 4291 §2.5.5.2)", () => {
+    // ::ffff:a.b.c.d is the standard IPv4-mapped form.
+    expect(isValidOriginHostname("[::ffff:127.0.0.1]")).toBe(true);
+    expect(isValidOriginHostname("[::ffff:192.0.2.128]")).toBe(true);
+    // 6 hex groups + IPv4 tail in uncompressed form.
+    expect(isValidOriginHostname("[0:0:0:0:0:ffff:127.0.0.1]")).toBe(true);
+  });
+  test("rejects malformed IPv4-mapped IPv6 literals", () => {
+    // Dotted-quad out of range.
+    expect(isValidOriginHostname("[::ffff:256.0.0.1]")).toBe(false);
+    // Missing parts in dotted-quad.
+    expect(isValidOriginHostname("[::ffff:127.0.0]")).toBe(false);
+    // Two dotted-quads.
+    expect(isValidOriginHostname("[::ffff:127.0.0.1:1.2.3.4]")).toBe(false);
+    // Dotted-quad on the left of "::".
+    expect(isValidOriginHostname("[127.0.0.1::1]")).toBe(false);
   });
   test("rejects schemes, ports, paths, whitespace, empty values, and bare/malformed IPv6", () => {
     expect(isValidOriginHostname("")).toBe(false);

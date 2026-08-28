@@ -104,9 +104,11 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       case "-n":
         parsed.exposureName = argv[++i];
         break;
-      case "--origin-hostname":
-        parsed.originHostname = argv[++i];
+      case "--origin-hostname": {
+        const value = argv[++i];
+        parsed.originHostname = value ?? "";
         break;
+      }
       case "--mode":
         parsed.mode = argv[++i];
         break;
@@ -175,24 +177,43 @@ function fail(args: ParsedArgs, code: string, message: string, nextStep: string)
  * in its bracketed form. Bare `::1` is therefore rejected.
  */
 const MAX_IPV6_HEX_GROUPS = 8;
+const IPV4_DOTTED_QUAD =
+  /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
 function isValidIpv6Group(group: string): boolean {
   return /^[0-9A-Fa-f]{1,4}$/.test(group);
 }
 
+function isValidIpv6Segment(segment: string): boolean {
+  if (segment === "") return true;
+  const parts = segment.split(":");
+  // IPv4-mapped IPv6 (RFC 4291 §2.5.5.2): the last 32 bits are a dotted-quad.
+  const last = parts[parts.length - 1];
+  if (last !== undefined && IPV4_DOTTED_QUAD.test(last)) {
+    const hexParts = parts.slice(0, -1);
+    if (hexParts.length === 0) return false;
+    return hexParts.every(isValidIpv6Group);
+  }
+  return parts.every(isValidIpv6Group);
+}
+
 function isBracketedIpv6(value: string): boolean {
   if (value.length < 3 || value[0] !== "[" || value[value.length - 1] !== "]") return false;
   const inner = value.slice(1, -1);
-  if (inner === "" || !/^[0-9A-Fa-f:]+$/.test(inner)) return false;
+  if (inner === "" || !/^[0-9A-Fa-f:.]+$/.test(inner)) return false;
   const hasDouble = inner.includes("::");
 
   // "::" may appear exactly once.
   if (hasDouble && inner.indexOf("::", inner.indexOf("::") + 2) !== -1) return false;
 
   if (!hasDouble) {
-    // Uncompressed form: exactly 8 groups of 1-4 hex digits.
-    const groups = inner.split(":");
-    return groups.length === MAX_IPV6_HEX_GROUPS && groups.every(isValidIpv6Group);
+    // Uncompressed form: exactly 8 hex groups, OR 6 hex groups + IPv4 tail.
+    const parts = inner.split(":");
+    const last = parts[parts.length - 1];
+    if (last !== undefined && IPV4_DOTTED_QUAD.test(last)) {
+      return parts.length === 7 && parts.slice(0, -1).every(isValidIpv6Group);
+    }
+    return parts.length === MAX_IPV6_HEX_GROUPS && parts.every(isValidIpv6Group);
   }
 
   // Compressed form: "::" stands for one or more runs of zeroes, so the written
@@ -200,12 +221,22 @@ function isBracketedIpv6(value: string): boolean {
   const parts = inner.split("::");
   const left = parts[0] ?? "";
   const right = parts[1] ?? "";
-  const good = (segment: string): boolean =>
-    segment === "" || segment.split(":").every(isValidIpv6Group);
-  if (!good(left) || !good(right)) return false;
-  const writtenGroups = (segment: string): number =>
-    segment === "" ? 0 : segment.split(":").length;
-  return writtenGroups(left) + writtenGroups(right) < MAX_IPV6_HEX_GROUPS;
+  const writtenGroups = (segment: string): number => {
+    if (segment === "") return 0;
+    const segParts = segment.split(":");
+    const last = segParts[segParts.length - 1];
+    if (last !== undefined && IPV4_DOTTED_QUAD.test(last)) {
+      // The dotted-quad counts as 2 IPv6 groups.
+      return segParts.length + 1;
+    }
+    return segParts.length;
+  };
+  if (writtenGroups(left) + writtenGroups(right) >= MAX_IPV6_HEX_GROUPS) return false;
+  // Each side must be a valid sequence of hex groups (or empty) and must not
+  // contain an IPv4 tail on the left side (only the right side may carry one).
+  if (!isValidIpv6Segment(left)) return false;
+  if (!isValidIpv6Segment(right)) return false;
+  return true;
 }
 
 export function isValidOriginHostname(value: string): boolean {
@@ -337,11 +368,13 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
 
   const originHostname = args.originHostname ?? process.env.CLOUD_EXPOSE_ORIGIN_HOSTNAME;
   if (originHostname !== undefined && !isValidOriginHostname(originHostname)) {
+    const fromEnv = args.originHostname === undefined;
+    const source = fromEnv ? "CLOUD_EXPOSE_ORIGIN_HOSTNAME" : "--origin-hostname";
     return fail(
       args,
       "invalid-origin-hostname",
-      `--origin-hostname must be a bare hostname, IPv4, or bracketed IPv6 literal (got "${originHostname}")`,
-      "retry with --origin-hostname app (same compose network), --origin-hostname host.docker.internal, --origin-hostname [::1], or drop the flag for the default 127.0.0.1",
+      `${source} must be a bare hostname, IPv4, or bracketed IPv6 literal (got "${originHostname}")`,
+      "retry with --origin-hostname app (same compose network), --origin-hostname host.docker.internal, --origin-hostname [::1], or unset the env var for the default 127.0.0.1",
     );
   }
 

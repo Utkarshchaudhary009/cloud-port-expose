@@ -42,15 +42,22 @@ WORKDIR /app
 # The system trust store: the agent dials `wss://...` relays, so Bun must be
 # able to validate real CA-signed certs. `debian:bookworm-slim` ships without
 # it, which otherwise surfaces as an opaque connection error (§8 fail-loud).
-# Base image is digest-pinned, so the apt-visible packages come from the Debian
-# snapshot baked into that digest rather than drifting upstream.
+# `ca-certificates` is unpinned intentionally: the base image's
+# /etc/apt/sources.list still points at the live Debian mirror, so any
+# reproducibility guarantee must come from the digest-pinned base, not from
+# pinning individual apt packages. For tighter supply-chain control, swap
+# `apt-get install` for a vendored tarball or an internal mirror in CI.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user with a stable UID/GID.
+# Non-root user with a stable UID/GID and a writable home directory.
+# `/app` is both the WORKDIR and the home dir: the CLI persists auth tokens
+# under ~/.cloud-expose/auth.json, so the user must own the directory or
+# `login` crashes with EACCES.
 RUN groupadd --system --gid 10001 cloud-expose \
-    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin cloud-expose
+    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin cloud-expose \
+    && chown cloud-expose:cloud-expose /app
 
 COPY --from=builder /build/cloud-expose /usr/local/bin/cloud-expose
 RUN chmod 0555 /usr/local/bin/cloud-expose
