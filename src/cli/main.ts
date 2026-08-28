@@ -67,6 +67,8 @@ export interface ParsedArgs {
   readyTimeoutMs: number;
 }
 
+const EMPTY_VALUE_SENTINEL = "\u0000EMPTY\u0000";
+
 export function parseArgs(argv: readonly string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     subcommand: null,
@@ -111,6 +113,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       case "--token":
       case "-t":
         parsed.token = takeValue();
+        // Sentinel for the next stage: an empty value means the user passed
+        // `--token` with no value, so we must not silently fall back to
+        // CLOUD_EXPOSE_TOKEN. Surface the error in runExpose / runLogin below.
+        if (parsed.token === "") parsed.token = EMPTY_VALUE_SENTINEL;
         break;
       case "--id":
         parsed.exposureId = takeValue();
@@ -398,6 +404,16 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
   // would fail with `invalid-token`. Phase 10's control-plane login will flip
   // the default. Until then, callers must explicitly opt in.
   const autoLoad = process.env.CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN === "1";
+  // An explicit empty value (`--token` with no argument) must not silently
+  // fall back to CLOUD_EXPOSE_TOKEN — surface a structured error instead.
+  if (args.token === EMPTY_VALUE_SENTINEL) {
+    return fail(
+      args,
+      "missing-token",
+      "--token requires a value",
+      "pass --token <token> or set CLOUD_EXPOSE_TOKEN",
+    );
+  }
   const token =
     args.token ?? process.env.CLOUD_EXPOSE_TOKEN ?? (autoLoad ? persisted.clientToken : undefined);
 

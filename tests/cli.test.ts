@@ -200,6 +200,20 @@ describe("cloud-expose CLI", () => {
     expect(parsed.error.nextStep).toMatch(/--relay|CLOUD_EXPOSE_RELAY/);
   });
 
+  test("--token without a value reports missing-token (no silent CLOUD_EXPOSE_TOKEN fallback)", async () => {
+    // Regression: the parser previously stored an empty string for a missing
+    // value, which then bypassed the `??` env fallback and silently used
+    // CLOUD_EXPOSE_TOKEN. Now we surface a structured error instead.
+    const r = await runCli(["--json", "3000", "--relay", "ws://127.0.0.1:1", "--token"], {
+      CLOUD_EXPOSE_RELAY: "",
+      CLOUD_EXPOSE_TOKEN: "should-not-be-used",
+    });
+    expect(r.exitCode).toBe(1);
+    const parsed = JSON.parse(r.stdout.trim()) as { ok: boolean; error: { code: string } };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error.code).toBe("missing-token");
+  });
+
   test("--json failure: invalid port is reported as a structured error", async () => {
     const r = await runCli(["abc", "--json"]);
     expect(r.exitCode).toBe(1);
