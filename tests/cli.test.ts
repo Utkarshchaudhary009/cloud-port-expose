@@ -39,6 +39,7 @@ function runCli(
 async function spawnJsonProc<T = unknown>(options: {
   args: string[];
   env: Record<string, string>;
+  timeoutMs?: number;
 }): Promise<{
   proc: ReturnType<typeof Bun.spawn>;
   parsed: T;
@@ -51,21 +52,40 @@ async function spawnJsonProc<T = unknown>(options: {
   });
   const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();
+  // Drain stdout in a background task into a buffer. The poll loop then only
+  // inspects the buffer, so it can never lose a chunk that arrived between
+  // the read() and the timer.
   let buf = "";
+  const drainer = (async () => {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      if (value) buf += decoder.decode(value);
+    }
+  })();
+  const timeoutMs = options.timeoutMs ?? 5_000;
   try {
     const start = Date.now();
-    while (Date.now() - start < 5_000 && !buf.includes("\n")) {
-      const readPromise = reader.read();
-      const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-        setTimeout(() => resolve({ value: undefined, done: true }), 250),
+    let parsed: T | null = null;
+    while (Date.now() - start < timeoutMs) {
+      const nl = buf.indexOf("\n");
+      if (nl !== -1) {
+        const line = buf.slice(0, nl).trim();
+        if (line) {
+          parsed = JSON.parse(line) as T;
+          break;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (parsed === null) {
+      throw new Error(
+        `spawnJsonProc: no JSON line in stdout within ${timeoutMs}ms. got: ${buf.slice(0, 200)}`,
       );
-      const { value, done } = await Promise.race([readPromise, timer]);
-      if (done && value === undefined) break;
-      if (value) buf += decoder.decode(value);
     }
     return {
       proc,
-      parsed: JSON.parse(buf.trim()) as T,
+      parsed: parsed as T,
       cleanup: async () => {
         await reader.cancel().catch(() => {});
         proc.kill("SIGTERM");
@@ -74,6 +94,7 @@ async function spawnJsonProc<T = unknown>(options: {
         } catch {
           // already dead
         }
+        await drainer.catch(() => {});
       },
     };
   } catch (err) {
@@ -84,6 +105,7 @@ async function spawnJsonProc<T = unknown>(options: {
     } catch {
       // already dead
     }
+    await drainer.catch(() => {});
     throw err;
   }
 }
@@ -560,8 +582,9 @@ describe("isValidOriginHostname", () => {
     expect(isValidOriginHostname("[::ffff:127.0.0]")).toBe(false);
     // Two dotted-quads.
     expect(isValidOriginHostname("[::ffff:127.0.0.1:1.2.3.4]")).toBe(false);
-    // Dotted-quad on the left of "::".
+    // Dotted-quad on the left of "::" — only the right side may carry one.
     expect(isValidOriginHostname("[127.0.0.1::1]")).toBe(false);
+    expect(isValidOriginHostname("[1:2:3:4:1.2.3.4::1]")).toBe(false);
   });
   test("rejects schemes, ports, paths, whitespace, empty values, and bare/malformed IPv6", () => {
     expect(isValidOriginHostname("")).toBe(false);

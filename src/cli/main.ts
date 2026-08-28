@@ -232,8 +232,10 @@ function isBracketedIpv6(value: string): boolean {
     return segParts.length;
   };
   if (writtenGroups(left) + writtenGroups(right) >= MAX_IPV6_HEX_GROUPS) return false;
-  // Each side must be a valid sequence of hex groups (or empty) and must not
-  // contain an IPv4 tail on the left side (only the right side may carry one).
+  // Each side must be a valid sequence of hex groups (or empty) and the IPv4
+  // dotted-quad form is only allowed as the final right-side segment, never
+  // embedded anywhere on the left (e.g. `[1:2:3:4:1.2.3.4::1]` is invalid).
+  if (left.includes(".")) return false;
   if (!isValidIpv6Segment(left)) return false;
   if (!isValidIpv6Segment(right)) return false;
   return true;

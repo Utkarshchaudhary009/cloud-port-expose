@@ -284,7 +284,8 @@ All three blocking Sourcery findings on PR #6 are addressed in commits `9809177`
 
 - [x] Publish an agent Docker image (debian-slim or alpine base; compiled Bun binaries cannot run `FROM scratch`). <!-- built locally: docker build -t cloud-expose:local . ; smoke-tested --version/--help -->
 - [x] Document running the agent alongside any application container. <!-- docs/docker.md + examples/ -->
-- [x] Support container-to-host/local-network targeting as required. <!-- CLI --origin-hostname / CLOUD_EXPOSE_ORIGIN_HOSTNAME with strict validation; verified end-to-end via Docker DNS (agent container -> nginx container) -->
+- [x] Support container-to-container targeting as required. <!-- CLI --origin-hostname / CLOUD_EXPOSE_ORIGIN_HOSTNAME with strict validation; verified end-to-end via Docker DNS (agent container -> nginx container) -->
+- [x] Document container-to-host/local-network targeting. <!-- docs/docker.md describes --origin-hostname host.docker.internal with the host-gateway extra_hosts flag; not exercised by an automated test in this phase -->
 - [x] Ensure the container needs only outbound connectivity. <!-- verified: neither app nor agent container publishes any port; agent dials out to the relay only -->
 - [x] Define secure secret injection for container startup. <!-- docs/docker.md: env_file only, no build args, no tokens in URLs -->
 - [x] Add examples for T3, Next.js, Vite, and a generic HTTP server. <!-- examples/; T3 is an explicit placeholder pending Phase 8 -->

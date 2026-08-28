@@ -104,13 +104,13 @@ Rules enforced across this repo:
 | Method                        | Allowed | Why                                                              |
 | ----------------------------- | ------- | ---------------------------------------------------------------- |
 | Compose `env_file` (gitignored)| ✅      | Runtime-scoped, not baked into images or layers.                 |
-| Docker secrets                | ✅*     | Swarms/pods-style setups; wire into `CLOUD_EXPOSE_*` at startup. |
 | Build args (`ARG`/`ENV`)      | ❌      | Persist in image layers and history — recoverable long-term.     |
 | Token in relay URL            | ❌      | URLs leak into logs, shell history, and analytics.               |
 | Committed dotfiles             | ❌      | Only `*.example` placeholders belong in git.                     |
 
-\* Docker secrets files can be sourced into env vars by your entrypoint; the credential still
-never appears in a URL or image layer. For plain `docker run`, pass `-e CLOUD_EXPOSE_TOKEN`.
+For plain `docker run`, pass `-e CLOUD_EXPOSE_TOKEN` (and `-e CLOUD_EXPOSE_RELAY`) directly. The
+shipped image does not currently read Docker-secrets files; if you need that, wrap the entrypoint
+in your own image rather than relying on the upstream one.
 
 ## Verify it yourself (host without inbound ports)
 
