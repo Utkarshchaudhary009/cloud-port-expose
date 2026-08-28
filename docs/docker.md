@@ -68,11 +68,11 @@ Netns-sharing caveats (real limitations, stated plainly):
 
 - While the namespace-owner container (`web`) is down, the sidecar's networking is down too.
   Always restart them together (`docker compose restart web cloud-expose`).
-- Exposing a service in a **different** container or on the Docker host would require a
-  configurable origin hostname (e.g. `app:3000`, `host.docker.internal`). The library layer
-  already accepts `originHostname`, but the CLI does not expose a flag for it yet — that is
-  the outstanding "container-to-host/local-network targeting" task of Phase 7. Until then,
-  keep the agent and origin in one netns pair.
+- Exposing a service in a **different** container or on the Docker host is supported with
+  `--origin-hostname` (e.g. `--origin-hostname app` for a compose-network DNS name, or
+  `--origin-hostname host.docker.internal` to reach a host-port-published service). The value
+  must be a bare hostname or IP — no scheme, port, or path — and is validated by the CLI
+  (`CLOUD_EXPOSE_ORIGIN_HOSTNAME` sets the same thing via the environment).
 
 ## Secret injection: env file, nothing else
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isValidOriginHostname } from "../src/cli/main";
 import { startRelay } from "../src/relay/server";
 import type { RelayHandle } from "../src/relay/session";
 import { type HttpOriginHandle, startHttpOrigin } from "./fixtures/origin-http";
@@ -382,5 +383,142 @@ describe("cloud-expose CLI", () => {
     // We expect a failure (dead relay), proving the =N spelling was accepted
     // and the short timeout applied.
     expect(parsed.error.code).toBeDefined();
+  });
+
+  test("--origin-hostname rejects malformed values with a structured error", async () => {
+    for (const bad of ["http://evil", "app:3000", "two words", "-leading-dash", "trailing."]) {
+      const r = await runCli([
+        "3000",
+        "--relay",
+        "ws://127.0.0.1:1",
+        "--origin-hostname",
+        bad,
+        "--json",
+      ]);
+      expect(r.exitCode).toBe(1);
+      const parsed = JSON.parse(r.stdout.trim()) as {
+        ok: boolean;
+        error: { code: string; nextStep: string };
+      };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe("invalid-origin-hostname");
+      expect(parsed.error.nextStep).toContain("--origin-hostname");
+    }
+  });
+
+  test("expose with explicit --origin-hostname 127.0.0.1 reaches the origin", async () => {
+    // Same behavior as the default, but exercises the flag → agent wiring
+    // end-to-end (the flag is what enables container-to-host targeting).
+    const proc = Bun.spawn(
+      [
+        BUN,
+        "run",
+        CLI_PATH,
+        String(origin.port),
+        "--relay",
+        relay.agentUrl,
+        "--origin-hostname",
+        "127.0.0.1",
+        "--json",
+      ],
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env, CLOUD_EXPOSE_RELAY: "" } },
+    );
+    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let stdoutBuf = "";
+    try {
+      const start = Date.now();
+      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
+        const readPromise = stdoutReader.read();
+        const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
+          setTimeout(() => resolve({ value: undefined, done: true }), 250),
+        );
+        const { value, done } = await Promise.race([readPromise, timer]);
+        if (done && value === undefined) break;
+        if (value) stdoutBuf += decoder.decode(value);
+      }
+      const parsed = JSON.parse(stdoutBuf.trim()) as { ok: boolean; hostname: string };
+      expect(parsed.ok).toBe(true);
+      const res = await fetch(`http://127.0.0.1:${relay.port}/origin-host`, {
+        headers: { host: `${parsed.hostname}:${relay.port}` },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { path: string };
+      expect(body.path).toBe("/origin-host");
+    } finally {
+      await stdoutReader.cancel().catch(() => {});
+      proc.kill("SIGTERM");
+      try {
+        await proc.exited;
+      } catch {
+        // already dead
+      }
+    }
+  }, 15_000);
+
+  test("expose honors CLOUD_EXPOSE_ORIGIN_HOSTNAME env var", async () => {
+    const proc = Bun.spawn(
+      [BUN, "run", CLI_PATH, String(origin.port), "--relay", relay.agentUrl, "--json"],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          CLOUD_EXPOSE_RELAY: "",
+          CLOUD_EXPOSE_ORIGIN_HOSTNAME: "127.0.0.1",
+        },
+      },
+    );
+    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let stdoutBuf = "";
+    try {
+      const start = Date.now();
+      while (Date.now() - start < 5_000 && !stdoutBuf.includes("\n")) {
+        const readPromise = stdoutReader.read();
+        const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
+          setTimeout(() => resolve({ value: undefined, done: true }), 250),
+        );
+        const { value, done } = await Promise.race([readPromise, timer]);
+        if (done && value === undefined) break;
+        if (value) stdoutBuf += decoder.decode(value);
+      }
+      const parsed = JSON.parse(stdoutBuf.trim()) as { ok: boolean; hostname: string };
+      expect(parsed.ok).toBe(true);
+      const res = await fetch(`http://127.0.0.1:${relay.port}/origin-env`, {
+        headers: { host: `${parsed.hostname}:${relay.port}` },
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      await stdoutReader.cancel().catch(() => {});
+      proc.kill("SIGTERM");
+      try {
+        await proc.exited;
+      } catch {
+        // already dead
+      }
+    }
+  }, 15_000);
+});
+
+describe("isValidOriginHostname", () => {
+  test("accepts bare hostnames, docker names, and IPs", () => {
+    expect(isValidOriginHostname("127.0.0.1")).toBe(true);
+    expect(isValidOriginHostname("localhost")).toBe(true);
+    expect(isValidOriginHostname("host.docker.internal")).toBe(true);
+    expect(isValidOriginHostname("app")).toBe(true);
+    expect(isValidOriginHostname("my_app")).toBe(true);
+    expect(isValidOriginHostname("svc.example.com")).toBe(true);
+  });
+  test("rejects schemes, ports, paths, whitespace, and empty values", () => {
+    expect(isValidOriginHostname("")).toBe(false);
+    expect(isValidOriginHostname("http://evil")).toBe(false);
+    expect(isValidOriginHostname("app:3000")).toBe(false);
+    expect(isValidOriginHostname("app/secret")).toBe(false);
+    expect(isValidOriginHostname("two words")).toBe(false);
+    expect(isValidOriginHostname("-leading")).toBe(false);
+    expect(isValidOriginHostname("trailing-")).toBe(false);
+    expect(isValidOriginHostname(".")).toBe(false);
+    expect(isValidOriginHostname(`a`.repeat(254))).toBe(false);
   });
 });

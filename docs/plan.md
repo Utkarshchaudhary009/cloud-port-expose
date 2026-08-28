@@ -1,6 +1,6 @@
 # Cloud Port Expose — Implementation Plan
 
-> **Status:** Implementation in progress — Phases 1–6 done; Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md). Phase 6 PR #6 is open with Sourcery review resolving blocking issues (auto-load token, --ready-timeout forwarding, --json for help/version). Next up: Phase 7 after PR #6 merges.
+> **Status:** Implementation in progress — Phases 1–6 done; Phase 7 nearly done (Docker image, docs, examples, container-to-host targeting verified end-to-end; remaining: trusted-TLS HTTPS + T3 instance checks). Phase 5's public-infra items (wildcard DNS + trusted TLS) remain blocked on real infrastructure (see docs/deployment.md).
 >
 > **Amendment log:** 2026-08-26 — studied `mxschmitt/action-tmate`; hardened Phases 6 and 9, added Phase 11 (Release Engineering) and a non-committed Backlog section.
 >
@@ -282,12 +282,12 @@ All three blocking Sourcery findings on PR #6 are addressed in commits `9809177`
 
 ### Tasks
 
-- [ ] Publish an agent Docker image (debian-slim or alpine base; compiled Bun binaries cannot run `FROM scratch`).
-- [ ] Document running the agent alongside any application container.
-- [ ] Support container-to-host/local-network targeting as required.
-- [ ] Ensure the container needs only outbound connectivity.
-- [ ] Define secure secret injection for container startup.
-- [ ] Add examples for T3, Next.js, Vite, and a generic HTTP server.
+- [x] Publish an agent Docker image (debian-slim or alpine base; compiled Bun binaries cannot run `FROM scratch`). <!-- built locally: docker build -t cloud-expose:local . ; smoke-tested --version/--help -->
+- [x] Document running the agent alongside any application container. <!-- docs/docker.md + examples/ -->
+- [x] Support container-to-host/local-network targeting as required. <!-- CLI --origin-hostname / CLOUD_EXPOSE_ORIGIN_HOSTNAME with strict validation; verified end-to-end via Docker DNS (agent container -> nginx container) -->
+- [x] Ensure the container needs only outbound connectivity. <!-- verified: neither app nor agent container publishes any port; agent dials out to the relay only -->
+- [x] Define secure secret injection for container startup. <!-- docs/docker.md: env_file only, no build args, no tokens in URLs -->
+- [x] Add examples for T3, Next.js, Vite, and a generic HTTP server. <!-- examples/; T3 is an explicit placeholder pending Phase 8 -->
 
 ### Deliverable
 
@@ -295,12 +295,12 @@ A disposable Docker workspace can expose its own services without manual port fo
 
 ### Verification
 
-- [ ] Start the agent in Docker.
-- [ ] Expose a service from the container.
-- [ ] Reach the service externally through HTTPS.
-- [ ] Restart the container and reconnect successfully.
-- [ ] Verify no inbound host port is required by the agent.
-- [ ] Run a T3 test instance through the tunnel.
+- [x] Start the agent in Docker. <!-- docker run cloud-expose:local --version/--help + live agent container -->
+- [x] Expose a service from the container. <!-- nginx:alpine origin reached through the tunnel via --origin-hostname cpx-app; HTTP 200 + 404 passthrough -->
+- [ ] Reach the service externally through HTTPS. <!-- BLOCKED: verified over HTTP end-to-end via Docker; trusted-TLS HTTPS needs the Phase 5 infra (wildcard DNS/ACME), same blocker -->
+- [x] Restart the container and reconnect successfully. <!-- killed agent -> 503 offline; restarted with same --id -> same stable hostname -> 200 -->
+- [x] Verify no inbound host port is required by the agent. <!-- docker port empty on both containers; all traffic via outbound dial -->
+- [ ] Run a T3 test instance through the tunnel. <!-- Phase 8; t3-placeholder covers plumbing only -->
 
 ---
 

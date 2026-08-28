@@ -25,6 +25,10 @@ Options:
   -n, --name <name>     Stable name → https://<name>.<domain>
       --id <id>         Stable exposure id (default: random)
       --mode <mode>     Exposure access mode: open | session (default: open)
+      --origin-hostname <host>
+                        Host the agent dials for the origin (default: 127.0.0.1).
+                        Use another container's DNS name (app) or the Docker host
+                        (host.docker.internal) for container-to-host targeting.
       --ready-timeout   Seconds to wait for relay to confirm routable (default: 10)
       --detach          Spawn the agent in the background and return immediately
       --json            Emit exactly one JSON object on stdout
@@ -36,6 +40,7 @@ Options:
 Environment:
   CLOUD_EXPOSE_RELAY               Default relay WebSocket URL
   CLOUD_EXPOSE_TOKEN               Default client credential
+  CLOUD_EXPOSE_ORIGIN_HOSTNAME     Default origin hostname (same as --origin-hostname)
   CLOUD_EXPOSE_CONFIG              Override config directory (default: ~/.cloud-expose)
   CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN Set to 1 to auto-load the persisted login token.
                                    Off by default because Phase 6's local-mode
@@ -50,6 +55,7 @@ export interface ParsedArgs {
   token: string | undefined;
   exposureId: string | undefined;
   exposureName: string | undefined;
+  originHostname: string | undefined;
   mode: "open" | "session" | string | undefined;
   json: boolean;
   verbose: boolean;
@@ -68,6 +74,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     token: undefined,
     exposureId: undefined,
     exposureName: undefined,
+    originHostname: undefined,
     mode: undefined,
     json: false,
     verbose: false,
@@ -95,6 +102,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       case "--name":
       case "-n":
         parsed.exposureName = argv[++i];
+        break;
+      case "--origin-hostname":
+        parsed.originHostname = argv[++i];
         break;
       case "--mode":
         parsed.mode = argv[++i];
@@ -151,6 +161,18 @@ function fail(args: ParsedArgs, code: string, message: string, nextStep: string)
     console.log(JSON.stringify({ ok: false, error: { code, message, nextStep } }));
   }
   return 1;
+}
+
+/**
+ * Bare hostname or IP literal only — no scheme, path, port, whitespace, or
+ * control characters (§7: reject malformed hostnames and routing identifiers).
+ * Allows RFC-1123 style labels plus the `_` character found in Docker compose
+ * service DNS names.
+ */
+export function isValidOriginHostname(value: string): boolean {
+  if (value.length === 0 || value.length > 253) return false;
+  const label = /^[A-Za-z0-9]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$/;
+  return value.split(".").every((part) => label.test(part));
 }
 
 function authPath(): string {
@@ -273,6 +295,16 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
     );
   }
 
+  const originHostname = args.originHostname ?? process.env.CLOUD_EXPOSE_ORIGIN_HOSTNAME;
+  if (originHostname !== undefined && !isValidOriginHostname(originHostname)) {
+    return fail(
+      args,
+      "invalid-origin-hostname",
+      `--origin-hostname must be a bare hostname or IP (got "${originHostname}")`,
+      "retry with --origin-hostname app (same compose network), --origin-hostname host.docker.internal, or drop the flag for the default 127.0.0.1",
+    );
+  }
+
   const persisted = readPersistedAuth();
   // The persisted credential is only auto-loaded when CLOUD_EXPOSE_LOAD_PERSISTED_TOKEN=1.
   // Local-mode login (Phase 6) generates a token that is NOT registered in any
@@ -290,6 +322,7 @@ async function runExpose(args: ParsedArgs, isChild: boolean): Promise<number> {
   const agent = new ExposeAgent({
     relayUrl: relay,
     originPort: args.port,
+    originHostname,
     clientToken: token,
     exposureId: args.exposureId,
     exposureName: args.exposureName,
@@ -367,6 +400,7 @@ function spawnDetached(
     ...(args.exposureId ? ["--id", args.exposureId] : []),
     ...(args.exposureName ? ["--name", args.exposureName] : []),
     ...(args.mode ? ["--mode", args.mode] : []),
+    ...(args.originHostname ? ["--origin-hostname", args.originHostname] : []),
     ...(token ? ["--token", token] : []),
     ...(args.json ? ["--json"] : []),
     ...(args.verbose ? ["--verbose"] : []),

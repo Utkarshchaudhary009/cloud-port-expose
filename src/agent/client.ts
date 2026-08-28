@@ -21,7 +21,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 export interface AgentOptions {
   relayUrl: string;
   originPort: number;
-  originHostname?: string;
+  originHostname?: string | undefined;
   exposureId?: string | undefined;
   /** Human-readable stable name -> <name>.<domain> hostname (requires relay-side support). */
   exposureName?: string | undefined;
